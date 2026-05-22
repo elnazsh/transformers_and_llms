@@ -3,6 +3,7 @@
 - **Date watched:** 2026-05-21
 - **Lecture:** https://www.youtube.com/watch?v=Ub3GoFaUcds
 - **Slides:** https://cme295.stanford.edu/slides/fall25-cme295-lecture1.pdf
+- **Notes taken by:** Elnaz Shafaei 
 
 ## Notes
 
@@ -248,5 +249,6 @@ where:
 
 ## References
 
+- Attention is all you need: https://arxiv.org/abs/1706.03762
 - MT evaluation metrics: Stat MT (Philipp Koehn) https://www2.statmt.org/book/slides/08-evaluation.pdf
 - More details on the self-attention mechanism: https://web.stanford.edu/~jurafsky/slp3/8.pdf
