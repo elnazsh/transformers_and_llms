@@ -2,7 +2,7 @@
 
 - **Date watched:** 2026-05-22
 - **Lecture:** https://www.youtube.com/watch?v=yT84Y5zCnaA
-- **Slides:** https://cme295.stanford.edu/slides/fall25-cme295-lecture1.pdf
+- **Slides:** https://cme295.stanford.edu/slides/fall25-cme295-lecture2.pdf
 - **Notes taken by:** Elnaz Shafaei
 
 ## Notes
@@ -39,11 +39,12 @@
     - or that the embedding of position $m+k$ relates to position $m$ in any consistent way.
 
 ##### 1.1.2. hardcoded (absolute) positional embeddings: sinusoidal embeddings
-- Main idea: tokens that are closer in position should have positional embeddings that are closer in vector space (i.e. higher dot product), and farther positions should have less similar embeddings.
+Main idea: tokens that are closer in position should have positional embeddings that are closer in vector space (i.e. higher dot product), and farther positions should have less similar embeddings.
 - sinusoidal embeddings were proposed in the original attention paper, kinda obsolete now
 - encode positions as vectors, add these vectors to input token vectors
 - therefore, $d$ = positional embeddings dimension = input tokens dimension = model dimension 
-- For position $m$ in the sequence, and vector dimension index $i$:
+
+For position $m$ in the sequence, and vector dimension index $i$:
 $$e_{m,2i} = \sin(w_i \cdot m)$$
 $$e_{m,2i+1} = \cos(w_i \cdot m)$$
 where $w_i = 10000^{-2i/d}$
@@ -138,7 +139,8 @@ $$\text{softmax}\left({q_i k_j \over \sqrt{d_k}} + \text{bias}(i,j)\right) $$
 Different implementations of the bias term:
 
 **Relative positional bias (T5 paper):**
-- bias is learned per head, as a function of the relative distance $i-j$.
+
+bias is learned per head, as a function of the relative distance $i-j$.
 $$
 \text{bias}(i,j) = \beta_{\text{bucket}}(i-j)
 $$
@@ -161,12 +163,14 @@ b_{-4} & b_{-3} & b_{-2} & b_{-1} & b_{0}
   - Intuition: the difference between "1 token apart" and "3 tokens apart" really matters; the difference between "60 apart" and "62 apart" matters very little. 
 - Direction matters. In bidirectional attention (T5 encoder), the sign of $i-j$ is meaningful: attending forward should be allowed to have different biases than attending backward. T5 splits the buckets in half: one half for $i-j > 0$, the other for $i-j < 0$. In causal attention (decoder), only one direction is possible, so all buckets serve that direction.
 - implementation detail: the bias matrix is added to the $QK^T$ matrix
-- pros:
+
+pros:
   - learned: the model can choose how strong the bias should be at each distance, per head; different heads can specialize (e.g. local vs long-range).
   - translation-invariant: the bias depends on $i-j$, not on absolute position, which matches what we usually want from position info.
   - far cheaper in parameters than learned absolute embeddings
   - bucketing lets a finite set of parameters cover arbitrarily long distances.
-- cons:
+
+cons:
   - still learned, so the model can only really trust the bias at distances well-represented in the training data; bucket values for rare long distances stay under-trained.
   - bucketing is a heuristic and log-spaced buckets discard fine-grained distance information at long ranges.
   - empirically too slow to train
@@ -176,7 +180,7 @@ b_{-4} & b_{-3} & b_{-2} & b_{-1} & b_{0}
 **ALiBi (Attention with Linear Biases):**
 - bias is linear in the distance, deterministic, not bounded. Each head $h$ has a fixed (not learned) slope $\mu_h$, typically chosen as a geometric sequence over heads.
 $$
-\text{bias}(i,j) = \mu (j-i)
+\text{bias}(i,j) = \mu \cdot (j-i)
 $$
 For causal attention $j \le i$, so $(j-i) \le 0$, and $\mu > 0$, giving a negative bias that grows with distance — a recency prior.
 - pros:
@@ -198,35 +202,144 @@ Con for both 'attention bias' approaches:
 ##### 1.2.2. relative positional information via rotary embeddings
 
 **RoPE (Rotary Positional Embeddings):**
-- combine the strengths of absolute and relative schemes:
-  - The relative-encoding behavior of T5 (translation invariance, position-as-distance).
-  - The per-token applicability of absolute encoding: you can compute the positional transform from just a single token's own position, no need to construct a full pairwise bias matrix.
 - key insight: rotate $q$ and $k$ by angles proportional to their absolute positions
   - $v_{\text{dog at position 1}} = v_{\text{dog at position 0}} \times  \text{rotation matrix with angle } \theta$
   - $v_{\text{dog at position 4}} = v_{\text{dog at position 0}} \times  \text{rotation matrix with angle } 4\theta$
-- makes their inner product depend only on the relative offset.
-  - i.e., angle between two target tokens is preserved as long as they have the same distance, e.g., 
+- this makes their inner product depend only on the relative offset.
+  - i.e., angle between two target tokens is preserved as long as they have the same distance, e.g.,
     - angle between "pig" and "dog" in "The pig chased the dog" is equal to
     - angle between "pig" and "dog" in "Once upon a time, the pig chased the dog".
-- also content and position are coupled:
-  - position acts on $q$ and $k$ themselves, so content–position interaction is multiplicative and explicit.
-- practically, it works smoothly with efficient attention kernels (no pairwise bias matrix), and the rotation structure plays well with later length-extension tricks (NTK scaling, YaRN, etc.).
 
 Implementation:
-- rotates the query and key vectors in 2D subspaces by an angle proportional to their absolute position. TODO
+- rotates the query and key vectors in 2D subspaces by an angle proportional to their absolute position.
+- query at position $m$: $q_m = x_m \cdot W_q \cdot R^T_{\theta , m}$
+- key at position $n$: $k_n = x_n \cdot W_k \cdot R^T_{\theta , n}$
+- $R_{\theta, m}$ is a $d \times d$ block-diagonal rotation matrix made of $d/2$ blocks of size $2 \times 2$. 
+- For $1 \le i \le \frac{d}{2}$, the $i$-th block rotates the pair of dimensions $(2i-1, 2i)$ by angle $m \theta_i$:
+$$
+\text{block}_i(m) = \begin{pmatrix} \cos(m\theta_i) & -\sin(m\theta_i) \\ \sin(m\theta_i) & \phantom{-}\cos(m\theta_i) \end{pmatrix}
+$$
+- frequencies are geometrically spaced (same convention as sinusoidal):
+$$
+\theta_i = 10000^{-2(i-1)/d}
+$$
+- full matrix:
+$$
+R_{\theta, m} = \begin{pmatrix}
+\cos(m\theta_1) & -\sin(m\theta_1) & 0 & 0 & \cdots & 0 & 0 \\
+\sin(m\theta_1) & \phantom{-}\cos(m\theta_1) & 0 & 0 & \cdots & 0 & 0 \\
+0 & 0 & \cos(m\theta_2) & -\sin(m\theta_2) & \cdots & 0 & 0 \\
+0 & 0 & \sin(m\theta_2) & \phantom{-}\cos(m\theta_2) & \cdots & 0 & 0 \\
+\vdots & \vdots & \vdots & \vdots & \ddots & \vdots & \vdots \\
+0 & 0 & 0 & 0 & \cdots & \cos(m\theta_{d/2}) & -\sin(m\theta_{d/2}) \\
+0 & 0 & 0 & 0 & \cdots & \sin(m\theta_{d/2}) & \phantom{-}\cos(m\theta_{d/2})
+\end{pmatrix}
+$$
+- Reminder: Rotations in the same plane compose by adding angles: $R_a^T R_b = R_{b-a}$
+- Plugging $q_m$ and $k_n$ into the attention score:
+$$
+q_m k_n^T = (x_m W_q)\, R_{\theta, m}^T R_{\theta, n} \,(x_n W_k)^T = (x_m W_q)\, R_{\theta,\, n-m} \,(x_n W_k)^T.
+$$
+- The score depends only on the relative offset $n - m$, even though each token only ever saw a rotation by its own *absolute* position.
+- visually, an n-dimensional corkscrew that is rotating in space
 
-pros:
-  - encodes *relative* position even though it's applied per token — gets the translation-invariance of relative schemes with the implementation simplicity of absolute schemes.
-  - injected directly into $q$ and $k$, so position interacts multiplicatively with content (vs. the additive bias schemes above). Heads can learn content-dependent positional behavior.
-  - zero learnable positional parameters.
-  - works well with length-extension techniques (NTK-aware scaling, YaRN, position interpolation), which are now standard for extending the context of pretrained models.
-  - dominant in frontier LLMs (LLaMA, Mistral, Qwen, DeepSeek, Gemma, etc.); a strong empirical track record. 
+In practice, you never materialize the full matrix $R_{\theta, m}$. It's $d \times d$ but mostly zeros, so it would be wasteful.
+- the same computation can be expressed in a much simpler way
+- with two elementwise vector multiplications (denoted $\odot$), and one vector addition
+- using precomputed sine and cosine vectors:
+$$
+R_{\theta, m}\, x \;=\;
+\underbrace{\begin{pmatrix} x_1 \\ x_2 \\ x_3 \\ x_4 \\ \vdots \\ x_{d-1} \\ x_d \end{pmatrix}}_{x}
+\odot
+\underbrace{\begin{pmatrix} \cos(m\theta_1) \\ \cos(m\theta_1) \\ \cos(m\theta_2) \\ \cos(m\theta_2) \\ \vdots \\ \cos(m\theta_{d/2}) \\ \cos(m\theta_{d/2}) \end{pmatrix}}_{\cos_m}
+\;+\;
+\underbrace{\begin{pmatrix} -x_2 \\ \phantom{-}x_1 \\ -x_4 \\ \phantom{-}x_3 \\ \vdots \\ -x_d \\ \phantom{-}x_{d-1} \end{pmatrix}}_{\tilde{x}}
+\odot
+\underbrace{\begin{pmatrix} \sin(m\theta_1) \\ \sin(m\theta_1) \\ \sin(m\theta_2) \\ \sin(m\theta_2) \\ \vdots \\ \sin(m\theta_{d/2}) \\ \sin(m\theta_{d/2}) \end{pmatrix}}_{\sin_m}
+$$
+- compactly: $R_{\theta, m}\, x = x \odot \cos_m \,+\, \tilde{x} \odot \sin_m$, where
+  - $\cos_m, \sin_m \in \mathbb{R}^d$ are built by repeating each $\cos(m\theta_i)$ (resp. $\sin(m\theta_i)$) twice.
+  - $\tilde{x}$ is the "pair-swap with sign flip" of $x$. 
+- $O(d)$ per token instead of $O(d^2)$, no sparse kernels needed, and trivially vectorizable on GPU.
 
-cons:
-  - native extrapolation beyond training context is limited; high-frequency components dephase quickly, so going much past trained context without scaling tricks degrades quality.
-  - the rotation frequencies are fixed at design time, like sinusoidal; the model can't learn the spectrum.
-  - implementation has a few sharp edges (applying rotation in 2D pairs, interaction with KV cache, scaling schemes for context extension), which makes it a bit more work than ALiBi or a bias table.
-  - because rotations are unitary, RoPE doesn't reduce the magnitude of $\langle q, k \rangle$ with distance the way ALiBi does; any "decay with distance" behavior has to be learned by the model rather than imposed.
+```python
+# RoPE implementation
+import torch
+
+def build_rope_cache(seq_len, dim, base=10000.0):
+    """Precompute the cos_m and sin_m tensors once, reused across all layers & heads.
+    Returns: two tensors of shape (seq_len, dim).
+    """
+    assert dim % 2 == 0
+    half = dim // 2
+    theta = base ** (-torch.arange(half).float() * 2 / dim)   # (d/2,)
+    pos = torch.arange(seq_len).float()                       # (T,)
+    angles = torch.outer(pos, theta)                          # (T, d/2)
+    # duplicate each value: [θ1, θ1, θ2, θ2, ...] to get shape (T, d)
+    cos = angles.cos().repeat_interleave(2, dim=-1)
+    sin = angles.sin().repeat_interleave(2, dim=-1)
+    return cos, sin
+
+
+def pair_swap_neg(x):
+    """Compute x̃. Input and output are torch.Tensor of the same shape"""
+    x_even = x[..., 0::2]                       # x_1, x_3, x_5, ...
+    x_odd  = x[..., 1::2]                       # x_2, x_4, x_6, ...
+    return torch.stack((-x_odd, x_even), dim=-1).flatten(-2)
+
+
+def apply_rope(x, cos, sin):
+    """Apply RoPE rotation to x.
+    x:        torch.Tensor (..., T, d) e.g. (batch, heads, tokens, head_dim)
+    cos, sin: torch.Tensor      (T, d) precomputed by build_rope_cache (truncated to current T)
+    """
+    T = x.shape[-2]
+    return x * cos[:T] + pair_swap_neg(x) * sin[:T]
+
+def rope_attention(q, k, v, cos, sin):
+    """Scaled dot-product attention with RoPE applied to q and k (not v)."""
+    q = apply_rope(q, cos, sin)
+    k = apply_rope(k, cos, sin)
+    d = q.shape[-1]
+    scores = q @ k.transpose(-1, -2) / d ** 0.5
+    return scores.softmax(dim=-1) @ v
+
+class RoPEAttention(torch.nn.Module):
+    def __init__(self, max_seq_len, head_dim):
+        super().__init__()
+        cos, sin = build_rope_cache(max_seq_len, head_dim)
+        self.register_buffer("cos", cos)
+        self.register_buffer("sin", sin)
+
+    def forward(self, q, k, v):
+        return rope_attention(q, k, v, self.cos, self.sin)
+
+# Note: production code (LLaMA, HuggingFace) uses a mathematically equivalent
+# "halved" layout where dims (i, i+d/2) form a pair instead of (2i-1, 2i).
+# It's the same operation up to a fixed permutation, and more cache-friendly.
+```
+
+**Pros:**
+- best of both worlds:
+  - the per-token application of **absolute** encoding: you can compute the positional transform from just a single token's own position, cheap, no need to construct a full pairwise bias matrix.
+  - the **relative**-encoding behavior: the score depends only on the relative offset $n - m$
+- Position acts on $q$ and $k$ themselves, so content and position interact *multiplicatively*
+  - heads can learn content-dependent positional behavior (T5 and ALiBi can't).
+- Zero learnable positional parameters; 
+  - one cos/sin table is shared across all layers and heads.
+- $O(d)$ per token via the elementwise formula
+  - no sparse kernels, no pairwise bias matrix.
+- KV-cache friendly: 
+  - previously cached $k_n$ stays valid; 
+  - only the new $q_m, k_m$ need rotation.
+- Plays well with length-extension techniques (NTK-aware scaling, YaRN, position interpolation).
+- Dominant in frontier LLMs (LLaMA, Mistral, Qwen, DeepSeek, Gemma, etc.). strong empirical track record.
+
+**Cons:**
+- Native extrapolation past training context is limited
+  - high-frequency components dephase quickly, so quality drops without scaling tricks.
+- Rotation frequencies are fixed at design time (like sinusoidal); the model can't learn the spectrum.
+- Rotations are unitary (rotate without stretching or shrinking), so $\langle q, k \rangle$ doesn't decay with distance the way ALiBi imposes; any recency bias has to be learned.
 
 ### 2. Layer normalization
 ### 3. Attention approximation
