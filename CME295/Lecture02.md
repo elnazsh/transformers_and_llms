@@ -341,7 +341,90 @@ class RoPEAttention(torch.nn.Module):
 - Rotation frequencies are fixed at design time (like sinusoidal); the model can't learn the spectrum.
 - Rotations are unitary (rotate without stretching or shrinking), so $\langle q, k \rangle$ doesn't decay with distance the way ALiBi imposes; any recency bias has to be learned.
 
+---
+
 ### 2. Layer normalization
+why? 
+- helps stabilize and accelerate training
+- prevents activations from growing too large
+- prevents the "internal covariate shift" problem
+  - as earlier-layer weights update during training, the distribution of activations feeding into each later layer keeps shifting.
+  - normalizing activations to roughly fixed statistics (zero mean, unit variance) decouples each layer from drifts in earlier layers, so it learns against a stable input distribution.
+
+Batch normalization?
+- BN normalizes across the batch dimension → not used in transformers
+- LN normalizes across the feature dimension 
+
+**Original paper**
+- **post-norm**
+$$\text{output} = \text{LayerNorm}(x + \text{SubLayer}(x))$$
+- **after** residual connection (skip connection) is added
+- implementation:
+$$\text{LN}(x)=\gamma \hat{x} + \beta$$
+where $$\hat{x} = \frac{x - \mu}{\sqrt{\sigma^2 + \epsilon}}$$
+$$\mu = \frac{1}{d}\sum_{i=1}^d x_i$$
+$$\sigma^2 = \frac{1}{d}\sum_{i=1}^d (x_i - \mu)^2$$
+- learnable parameters $\gamma, \beta$
+
+```python
+import torch
+import torch.nn as nn
+ 
+class LayerNorm(nn.Module):
+    def __init__(self, dim, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+        self.bias = nn.Parameter(torch.zeros(dim))
+ 
+    def forward(self, x):
+        mean = x.mean(dim=-1, keepdim=True)
+        var = x.var(dim=-1, keepdim=True, unbiased=False)
+        x_norm = (x - mean) / torch.sqrt(var + self.eps)
+        return x_norm * self.weight + self.bias
+```
+or using pytorch built-in normalization `layer_norm = nn.LayerNorm(dim)`
+
+---
+
+**Xiong et al. (2020)**
+- "On Layer Normalization in the Transformer Architecture"
+- **pre-norm**
+$$\text{output} = x + \text{SubLayer}(\text{LayerNorm}(x))$$
+- **before** the sublayer is applied
+
+---
+**Zhang et al. (2019)**
+- why? convergence property is comparable, but with fewer parameters (and therefore quicker)
+- Root Mean Square Layer Normalization (RMS LayerNorm)
+- implementation:
+$$\text{RMSNorm}(x) = \gamma \odot \frac{x}{\sqrt{\frac{1}{d} \sum_{i=1}^{d} x_i^2 + \epsilon}}$$
+- learnable parameter $\gamma$
+
+```python
+import torch
+import torch.nn as nn
+ 
+class RMSNorm(nn.Module):
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.dim = dim
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+    
+    def forward(self, x):
+        # Calculate RMS across the last dimension(s)
+        rms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+ 
+        # Normalize
+        x_norm = x * rms * self.weight
+        return x_norm
+```
+
+or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
+
+---
+
 ### 3. Attention approximation
 ### 4. Transformer-based models
 ### 5. BERT deep dive
