@@ -426,6 +426,37 @@ or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
 ---
 
 ### 3. Attention approximation
+- **Problem:** standard self-attention has time and memory complexity of $O(N^2)$
+  - in sequence length $N$
+  - since each token attends to every other token
+- **Idea:** a more tractable solution, ideally without hurting performance
+  - instead of computing the full attention matrix, compute a **sparse attention matrix**
+  - i.e. each token only attends to a small **subset of tokens** 
+- So the question is in this tradeoff: _global connectivity_ vs. _efficiency_ 
+
+**Sliding Window Attention (SWA)**
+- each token attends only to its $W$ nearest neighbors (a **local** window)
+- complexity drops from $O(N^2)$ to $O(W\cdot N)$ where $W$ is window size
+  - people often call this "linear attention" in practice
+  - because complexity scales linearly with N when $W$ is treated as constant
+- stacking $L$ SWA layers grows the effective receptive field to $\approx L \cdot W$
+  - interleaving local and global attention layers
+  - analogous to receptive field growth in stacked CNNs
+  - used in e.g. **Mistral** models
+
+**LongFormer (Beltagy et al., 2020)**
+- combines:
+  - **sliding-window attention** (local neighbors)
+  - **dilated attention** (window with gaps; larger receptive field at the same cost)
+  - **global attention** on a few selected tokens (e.g. `[CLS]`, question tokens)
+    - these tokens attend to *all* others, and all others attend to *them*
+- See [this image](https://media.geeksforgeeks.org/wp-content/uploads/20231108170402/Longformer-attention-Mechanism-file.png) for a visual explanation.
+- overall complexity: $O(W \cdot N + G \cdot N)$ (linear in sequence length)
+  - $W$: local window size
+  - $G$: number of global-attention tokens
+
+#### 3.1. sharing attention heads 
+
 ### 4. Transformer-based models
 ### 5. BERT deep dive
 
@@ -435,3 +466,4 @@ or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
 - Google T5 paper (Raffel et al., 2020): https://arxiv.org/pdf/1910.10683
 - ALiBi: Train short, Test long paper (Press et al., 2021): https://arxiv.org/pdf/2108.12409
 - RoPE: RoFormer paper (Su et al., 2021): https://arxiv.org/pdf/2104.09864
+- Longformer paper (Beltagy et al., 2020): https://arxiv.org/pdf/2004.05150
