@@ -429,10 +429,13 @@ or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
 - **Problem:** standard self-attention has time and memory complexity of $O(N^2)$
   - in sequence length $N$
   - since each token attends to every other token
-- **Idea:** a more tractable solution, ideally without hurting performance
-  - instead of computing the full attention matrix, compute a **sparse attention matrix**
-  - i.e. each token only attends to a small **subset of tokens** 
-- So the question is in this tradeoff: _global connectivity_ vs. _efficiency_ 
+- So we need a more tractable solution, ideally without hurting performance
+  - aka we need to find a balance in this tradeoff: _global connectivity_ vs. _efficiency_ 
+
+#### 3.1. restricting the attention computations 
+
+- **idea:** instead of computing the full attention matrix, compute a **sparse attention matrix**
+- i.e. each token only attends to a small **subset of tokens**
 
 **Sliding Window Attention (SWA)**
 - each token attends only to its $W$ nearest neighbors (a **local** window)
@@ -455,7 +458,26 @@ or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
   - $W$: local window size
   - $G$: number of global-attention tokens
 
-#### 3.1. sharing attention heads 
+#### 3.2. sharing attention heads 
+- **idea:** instead of having a projection matrix per head, share the same projection matrix across heads
+  - more specifically, group Key/Value matrices and share each group between several Query matrices
+- **question:** why do we share keys and values and not the queries?
+  - the main motivation is the **KV cache** in autoregressive decoding: at each generation step, $K$ and $V$ for *all* previous tokens must be stored and re-read, so they dominate memory and bandwidth. $Q$ is only computed for the **current** token (one vector per step), so sharing it would save almost nothing.
+  - sharing $K$/$V$ also preserves **per-head specialization**: each head still has its own $Q$, i.e. it can "ask a different question" of the shared content representation. Sharing $Q$ instead would collapse the diversity of attention patterns within a group.
+- **conceptualization:** given $H$ heads, $G < H$ groups, we will have 
+  - a key matrix $K_1$ and a value matrix $V_1$ that are shared between ${H \over G}$ query matrices: $Q_1, Q_2, \cdots, Q_{{H\over G}}$,
+  - a key matrix $K_2$ and a value matrix $V_2$ that are shared between ${H \over G}$ query matrices: $Q_{{H\over G} + 1}, Q_{{H\over G} + 2}, \cdots, Q_{{2H\over G}}$,
+  - ...
+  - a key matrix $K_i$ and a value matrix $V_i$ that are shared between ${H \over G}$ query matrices: $Q_{(i-1) {H\over G} + 1}, Q_{(i-1) {H\over G} + 2}, \cdots, Q_{{iH\over G}}$,
+  - ... 
+  - a key matrix $K_G$ and a value matrix $V_G$ that are shared between ${H \over G}$ query matrices: $Q_{(G-1) {H \over G} + 1}, Q_{(G-1) {H \over G} + 2}, \cdots, Q_{H}$,
+- **variations:**
+
+| Variant                            | $G$ (# KV groups)                                               | Example models                  |
+| ---------------------------------- |-----------------------------------------------------------------| ------------------------------- |
+| **MHA** (Multi-Head Attention)     | $G = H$ (every head has its own $K$, $V$)                       | original Transformer, GPT-2     |
+| **GQA** (Grouped-Query Attention)  | $1 < G < H$ (queries split into $G$ groups, one $KV$ per group) | LLaMA-2 (70B), LLaMA-3, Mistral |
+| **MQA** (Multi-Query Attention)    | $G = 1$ (all query heads share a single $K$, $V$)               | PaLM, Falcon                    |
 
 ### 4. Transformer-based models
 ### 5. BERT deep dive
