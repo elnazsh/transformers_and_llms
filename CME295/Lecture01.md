@@ -174,7 +174,17 @@ where:
 
 ---
 
-### 6. Transformer architecture
+### 6. Original Transformer paper
+
+- positional embeddings: sinusoidal
+- layer norm: post-norm
+- no attention approximation: MQA (multi-head attention)
+- training task:
+  - trained autoregressively using next-token prediction on the target sentence $P(y_t | y_{\lt t}, x)$
+  - where
+    - $x$ is the source sentence, 
+    - $y_t$ is the next target token, and
+    - $y_{\lt t}$ is the previously generated target tokens
 
 ```
                                                Output Probabilities

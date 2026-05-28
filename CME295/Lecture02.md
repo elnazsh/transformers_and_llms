@@ -124,7 +124,7 @@ Sinusoidal embeddings (contd.)
   - it tends to get washed out in deeper models. 
   - better to inject position where it's used, i.e., inside the attention score, where the model is actually deciding _who attends to whom_.
 - proposed methods:
-  - relative positional embeddings (RPE): used in T5
+  - relative positional embeddings (RPE): used in T5 (transfer text-to-text transformers)
   - ALiBi (Attention with Linear Biases):
   - rotary positional embeddings (RoPE): dominant in frontier LLMs nowadays
 
@@ -473,13 +473,55 @@ or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
   - a key matrix $K_G$ and a value matrix $V_G$ that are shared between ${H \over G}$ query matrices: $Q_{(G-1) {H \over G} + 1}, Q_{(G-1) {H \over G} + 2}, \cdots, Q_{H}$,
 - **variations:**
 
-| Variant                            | $G$ (# KV groups)                                               | Example models                  |
-| ---------------------------------- |-----------------------------------------------------------------| ------------------------------- |
-| **MHA** (Multi-Head Attention)     | $G = H$ (every head has its own $K$, $V$)                       | original Transformer, GPT-2     |
-| **GQA** (Grouped-Query Attention)  | $1 < G < H$ (queries split into $G$ groups, one $KV$ per group) | LLaMA-2 (70B), LLaMA-3, Mistral |
-| **MQA** (Multi-Query Attention)    | $G = 1$ (all query heads share a single $K$, $V$)               | PaLM, Falcon                    |
+<table>
+  <thead>
+    <tr style="background-color: #d3d3d3;"><th>Variant</th><th><em>G</em> (# KV groups)</th><th>Example models</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>MHA</strong> (Multi-Head Attention)</td><td><em>G</em> = <em>H</em> (every head has its own <em>K</em>, <em>V</em>)</td><td>original Transformer, GPT-2</td></tr>
+    <tr><td><strong>GQA</strong> (Grouped-Query Attention)</td><td>1 &lt; <em>G</em> &lt; <em>H</em> (queries split into <em>G</em> groups, one <em>KV</em> per group)</td><td>LLaMA-2 (70B), LLaMA-3, Mistral</td></tr>
+    <tr><td><strong>MQA</strong> (Multi-Query Attention)</td><td><em>G</em> = 1 (all query heads share a single <em>K</em>, <em>V</em>)</td><td>PaLM, Falcon</td></tr>
+  </tbody>
+</table>
 
 ### 4. Transformer-based models
+
+<table>
+  <thead>
+    <tr style="background-color: #d3d3d3;"><th>Category</th><th>Typical tasks</th><th>Example models</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Encoder-decoder</td><td><strong>conditional seq2seq</strong><ul><li>translation</li><li>summarization</li><li>structured input → output</li></ul></td><td><ul><li><strong>T5</strong> (2019): span corruption</li><li><strong>mT5</strong> (2020): multilingual T5</li><li><strong>ByT5</strong> (2021): byte-level T5</li></ul></td></tr>
+    <tr><td>Encoder only</td><td><strong>understanding / representation</strong><ul><li>classification (sentiment, NER)</li><li>embeddings for retrieval/reranking</li></ul></td><td><ul><li><strong>BERT</strong> (2018): MLM + NSP</li><li><strong>DistilBERT</strong> (2019): KD from BERT</li><li><strong>RoBERTa</strong> (2019): MLM only, dynamic masking</li></ul></td></tr>
+    <tr><td>Decoder only</td><td><strong>autoregressive generation</strong><ul><li>chatbot</li><li>instruction following</li><li>code completion</li><li>covers seq2seq via prompting</li></ul></td><td><ul><li><strong>GPT</strong> (OpenAI, 2018–): CLM + SFT + RLHF</li><li><strong>LLaMA</strong> (Meta, 2023–): CLM + SFT + RLHF/DPO</li><li><strong>Mistral / Mixtral</strong> (2023–): CLM (Mixtral = MoE) + SFT</li><li><strong>Claude</strong> (Anthropic, 2023–): CLM + SFT + RLHF/CAI</li><li><strong>Gemini</strong> (Google, 2023–): CLM + SFT + RLHF</li></ul></td></tr>
+  </tbody>
+</table>
+
+**Training & architecture glossary:**
+
+*Pretraining objectives* — learned from raw text, from scratch:
+
+- **CLM**: *Causal Language Modeling.* Next-token prediction with a causal (left-to-right) mask. The standard pretraining objective for decoder-only models.
+- **Dynamic masking**: RoBERTa change: re-sample the masked positions every epoch instead of masking once and reusing. More data efficiency from the same corpus.
+- **MLM**: *Masked Language Modeling.* Randomly mask ~15% of input tokens; predict them from bidirectional context. The standard pretraining objective for encoder-only models.
+- **NSP**: *Next Sentence Prediction.* Given two sentences A and B, predict whether B actually follows A. Used in BERT; later shown to add little value and dropped by RoBERTa.
+- **Span corruption**: T5's pretraining objective. Mask contiguous *spans* of tokens (replaced by a single sentinel), and the decoder generates the missing spans in order. A natural fit for encoder-decoder models.
+
+*Supervised fine-tuning* — post-training with explicit labeled targets:
+
+- **KD**: *Knowledge Distillation.* Train a smaller "student" model to match the output distribution (and intermediate states) of a larger "teacher" model. DistilBERT is BERT distilled into ~40% fewer parameters.
+- **SFT**: *Supervised Fine-Tuning.* After pretraining, fine-tune on curated `(instruction, ideal response)` pairs. This is where instruction-following capability is learned.
+
+*Alignment / preference optimization* — post-training from preference signals rather than ground-truth labels (RLHF is RL-based; DPO and CAI are not strictly RL but serve the same role):
+
+- **CAI**: *Constitutional AI.* Anthropic's variant where instead of (or in addition to) human feedback, an AI model critiques and revises outputs against a written set of principles ("the constitution"). Used to scale alignment beyond what's feasible with humans alone.
+- **DPO**: *Direct Preference Optimization.* A simpler alternative to RLHF: train directly on preference pairs `(chosen, rejected)` with a contrastive loss, skipping the reward model and RL loop. Increasingly preferred in modern open-weights LLMs.
+- **RLHF**: *Reinforcement Learning from Human Feedback.* Humans rank model outputs → train a reward model → optimize the LM (usually with PPO) to maximize the reward. Shapes helpfulness, tone, refusal behavior.
+
+*Architectural* — not a training objective, but appears alongside them in the table:
+
+- **MoE**: *Mixture-of-Experts.* Replace each FFN with a bank of expert FFNs and a router that picks the top-k experts per token. Mixtral uses 8 experts, top-2 → more parameters but similar compute per token.
+
 ### 5. BERT deep dive
 
 # References
