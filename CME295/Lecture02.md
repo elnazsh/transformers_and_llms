@@ -492,7 +492,7 @@ or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
   </thead>
   <tbody>
     <tr><td>Encoder-decoder</td><td><strong>conditional seq2seq</strong><ul><li>translation</li><li>summarization</li><li>structured input → output</li></ul></td><td><ul><li><strong>T5</strong> (2019): span corruption</li><li><strong>mT5</strong> (2020): multilingual T5</li><li><strong>ByT5</strong> (2021): byte-level T5</li></ul></td></tr>
-    <tr><td>Encoder only</td><td><strong>understanding / representation</strong><ul><li>classification (sentiment, NER)</li><li>embeddings for retrieval/reranking</li></ul></td><td><ul><li><strong>BERT</strong> (2018): MLM + NSP</li><li><strong>DistilBERT</strong> (2019): KD from BERT</li><li><strong>RoBERTa</strong> (2019): MLM only, dynamic masking</li></ul></td></tr>
+    <tr><td>Encoder only</td><td><strong>understanding / representation</strong><ul><li>classification (sentiment, NER)</li><li>embeddings for retrieval/reranking</li></ul></td><td><ul><li><strong>BERT</strong> (2018): MLM + NSP</li><li><strong>DistilBERT</strong> (2019): KD from BERT</li><li><strong>RoBERTa</strong> (2019): MLM only, dynamic masking</li><li><strong>ALBERT</strong></li></li></ul></td></tr>
     <tr><td>Decoder only</td><td><strong>autoregressive generation</strong><ul><li>chatbot</li><li>instruction following</li><li>code completion</li><li>covers seq2seq via prompting</li></ul></td><td><ul><li><strong>GPT</strong> (OpenAI, 2018–): CLM + SFT + RLHF</li><li><strong>LLaMA</strong> (Meta, 2023–): CLM + SFT + RLHF/DPO</li><li><strong>Mistral / Mixtral</strong> (2023–): CLM (Mixtral = MoE) + SFT</li><li><strong>Claude</strong> (Anthropic, 2023–): CLM + SFT + RLHF/CAI</li><li><strong>Gemini</strong> (Google, 2023–): CLM + SFT + RLHF</li></ul></td></tr>
   </tbody>
 </table>
@@ -523,6 +523,21 @@ or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
 - **MoE**: *Mixture-of-Experts.* Replace each FFN with a bank of expert FFNs and a router that picks the top-k experts per token. Mixtral uses 8 experts, top-2 → more parameters but similar compute per token.
 
 ### 5. BERT deep dive
+- ELMo (University of Washington, 2018): bidirectional LSTMs
+- Bidirectional Encoder Representations from Transformers (BERT) (Google, 2018)
+  - Encoder only
+- placeholder tokens: `[CLS]` and `[SEP]`
+  - CLS for classification
+  - SEP for separation of sentences
+- Strategy. 
+  - Step 1: Pretraining with proxy tasks (MLM and NSP)
+  - Step 2: Finetuning for given end task
+- Pros 
+  - Finetuning does not need a lot of data 
+  - Good performance
+- Cons:
+  - Not suited for a range of tasks (e.g. text generation)
+  - Finetuning is a required step
 
 # References
 
