@@ -138,7 +138,7 @@ $$\text{softmax}\left({q_i k_j \over \sqrt{d_k}} + \text{bias}(i,j)\right) $$
 
 Different implementations of the bias term:
 
-**Relative positional bias (T5 paper):**
+###### 1.2.1.1. **Relative positional bias (T5 paper):**
 
 bias is learned per head, as a function of the relative distance $i-j$.
 $$
@@ -177,7 +177,7 @@ cons:
     - extra matrix addition in self-attention
     - changes in every step --> difficult for KV cache
 
-**ALiBi (Attention with Linear Biases):**
+###### 1.2.1.2. **ALiBi (Attention with Linear Biases):**
 - bias is linear in the distance, deterministic, not bounded. Each head $h$ has a fixed (not learned) slope $\mu_h$, typically chosen as a geometric sequence over heads.
 $$
 \text{bias}(i,j) = \mu \cdot (j-i)
@@ -212,8 +212,8 @@ Con for both 'attention bias' approaches:
 
 Implementation:
 - rotates the query and key vectors in 2D subspaces by an angle proportional to their absolute position.
-- query at position $m$: $q_m = x_m \cdot W_q \cdot R^T_{\theta , m}$
-- key at position $n$: $k_n = x_n \cdot W_k \cdot R^T_{\theta , n}$
+- query at position $m$: $$q_m = x_m \cdot W_q \cdot R^T_{\theta , m}$$
+- key at position $n$: $$k_n = x_n \cdot W_k \cdot R^T_{\theta , n}$$
 - $R_{\theta, m}$ is a $d \times d$ block-diagonal rotation matrix made of $d/2$ blocks of size $2 \times 2$. 
 - For $1 \le i \le \frac{d}{2}$, the $i$-th block rotates the pair of dimensions $(2i-1, 2i)$ by angle $m \theta_i$:
 $$
@@ -240,7 +240,7 @@ $$
 $$
 q_m k_n^T = (x_m W_q)\, R_{\theta, m}^T R_{\theta, n} \,(x_n W_k)^T = (x_m W_q)\, R_{\theta,\, n-m} \,(x_n W_k)^T.
 $$
-- The score depends only on the relative offset $n - m$, even though each token only ever saw a rotation by its own *absolute* position.
+- **The score depends only on the relative offset $n - m$, even though each token only ever saw a rotation by its own *absolute* position.**
 - visually, an n-dimensional corkscrew that is rotating in space
 
 In practice, you never materialize the full matrix $R_{\theta, m}$. It's $d \times d$ but mostly zeros, so it would be wasteful.
@@ -484,6 +484,8 @@ or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
   </tbody>
 </table>
 
+---
+
 ### 4. Transformer-based models
 
 <table>
@@ -492,7 +494,7 @@ or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
   </thead>
   <tbody>
     <tr><td>Encoder-decoder</td><td><strong>conditional seq2seq</strong><ul><li>translation</li><li>summarization</li><li>structured input → output</li></ul></td><td><ul><li><strong>T5</strong> (2019): span corruption</li><li><strong>mT5</strong> (2020): multilingual T5</li><li><strong>ByT5</strong> (2021): byte-level T5</li></ul></td></tr>
-    <tr><td>Encoder only</td><td><strong>understanding / representation</strong><ul><li>classification (sentiment, NER)</li><li>embeddings for retrieval/reranking</li></ul></td><td><ul><li><strong>BERT</strong> (2018): MLM + NSP</li><li><strong>DistilBERT</strong> (2019): KD from BERT</li><li><strong>RoBERTa</strong> (2019): MLM only, dynamic masking</li><li><strong>ALBERT</strong></li></li></ul></td></tr>
+    <tr><td>Encoder only</td><td><strong>understanding / representation</strong><ul><li>classification (sentiment, NER)</li><li>embeddings for retrieval/reranking</li></ul></td><td><ul><li><strong>BERT</strong> (2018): MLM + NSP</li><li><strong>DistilBERT</strong> (2019): KD from BERT</li><li><strong>RoBERTa</strong> (2019): MLM only, dynamic masking</li><li><strong>ALBERT</strong> (2019): SOP, cross-layer parameter sharing</li></ul></td></tr>
     <tr><td>Decoder only</td><td><strong>autoregressive generation</strong><ul><li>chatbot</li><li>instruction following</li><li>code completion</li><li>covers seq2seq via prompting</li></ul></td><td><ul><li><strong>GPT</strong> (OpenAI, 2018–): CLM + SFT + RLHF</li><li><strong>LLaMA</strong> (Meta, 2023–): CLM + SFT + RLHF/DPO</li><li><strong>Mistral / Mixtral</strong> (2023–): CLM (Mixtral = MoE) + SFT</li><li><strong>Claude</strong> (Anthropic, 2023–): CLM + SFT + RLHF/CAI</li><li><strong>Gemini</strong> (Google, 2023–): CLM + SFT + RLHF</li></ul></td></tr>
   </tbody>
 </table>
@@ -502,9 +504,10 @@ or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
 *Pretraining objectives* — learned from raw text, from scratch:
 
 - **CLM**: *Causal Language Modeling.* Next-token prediction with a causal (left-to-right) mask. The standard pretraining objective for decoder-only models.
-- **Dynamic masking**: RoBERTa change: re-sample the masked positions every epoch instead of masking once and reusing. More data efficiency from the same corpus.
 - **MLM**: *Masked Language Modeling.* Randomly mask ~15% of input tokens; predict them from bidirectional context. The standard pretraining objective for encoder-only models.
-- **NSP**: *Next Sentence Prediction.* Given two sentences A and B, predict whether B actually follows A. Used in BERT; later shown to add little value and dropped by RoBERTa.
+- **NSP**: *Next Sentence Prediction.* Given two sentences A and B, predict whether B actually follows A (Negative examples: Sentence B is picked at random from a completely different document). Used in BERT; later shown to add little value and dropped by RoBERTa.
+- **Dynamic masking**: RoBERTa change: re-sample the masked positions every epoch instead of masking once and reusing. More data efficiency from the same corpus.
+- **SOP**: *Sentence Order Prediction.* Given two consecutive segments A and B, predict whether they are in the correct order or swapped (Negative examples: Sentence A and Sentence B are from the same document, but their order is swapped). Replaced NSP in ALBERT to force the model to learn fine-grained inter-sentence coherence.
 - **Span corruption**: T5's pretraining objective. Mask contiguous *spans* of tokens (replaced by a single sentinel), and the decoder generates the missing spans in order. A natural fit for encoder-decoder models.
 
 *Supervised fine-tuning* — post-training with explicit labeled targets:
@@ -522,22 +525,112 @@ or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
 
 - **MoE**: *Mixture-of-Experts.* Replace each FFN with a bank of expert FFNs and a router that picks the top-k experts per token. Mixtral uses 8 experts, top-2 → more parameters but similar compute per token.
 
+---
+
 ### 5. BERT deep dive
-- ELMo (University of Washington, 2018): bidirectional LSTMs
-- Bidirectional Encoder Representations from Transformers (BERT) (Google, 2018)
-  - Encoder only
-- placeholder tokens: `[CLS]` and `[SEP]`
-  - CLS for classification
-  - SEP for separation of sentences
-- Strategy. 
-  - Step 1: Pretraining with proxy tasks (MLM and NSP)
-  - Step 2: Finetuning for given end task
-- Pros 
-  - Finetuning does not need a lot of data 
-  - Good performance
-- Cons:
-  - Not suited for a range of tasks (e.g. text generation)
-  - Finetuning is a required step
+BERT = Bidirectional Encoder Representations from Transformers
+
+Bidirectional self attention := the multi-head self attention block is unmasked non-causal.
+- also called Full/Global/Unrestricted/Vanilla self attention
+- i.e., every token in a sequence can attend to every other token in the entire input sequence simultaneously (both past and future)
+- the output representations from this model are computed through a full attention mechanism.
+- excellent for tasks requiring a holistic understanding of a text (like classification or extraction, also Vision Transformers)
+- but obviously not usable for autoregressive text generation because of "peeking" into the future tokens.
+
+Context:
+- ELMo paper (Feb 2018): bidirectional LSTMs
+- Bert paper (Oct 2018): bidirectional Transformers
+
+Some special tokens:
+- `[CLS]`, for "classify", marks the beginning of the input/sequence 
+- `[SEP]`, for "separator", separates sentences
+- `[MASK]`, for "masking", masks some tokens
+
+Multi-stage trainings:
+- **Step 1:** pretraining with proxy tasks (MLM + NSP)
+  - learns embeddings
+- **Step 2:** finetuning for given end task
+  - attach a head (typically a linear projection + Softmax) for the end task (typically classification)
+
+Pros:
+- makes use of transfer learning
+  - learns embeddings from a lot of unlabelled data
+  - but then finetuning does not need so much data
+- good performance (state of the art at the time)
+
+Cons:
+- not suited for generation tasks 
+- finetuning is a required step
+
+WordPiece algorithm: 
+- tokenizer trained on a training set beforehand
+- vocab size ~30K
+- great at detecting common particles
+
+<div style="border-left: 4px solid #888; padding-left: 1em; margin: 1em 0;">
+
+### 🔬 Deep Dive: Subword tokenization
+
+#### Motivation 
+- main issue with **word-based** tokenizers: **out-of-vocabulary (OOV) words**. 
+  - In order not to break completely, OOVs are treated as an Unknown (``[UNK]``) word.
+- main issue with **character-based** tokenizers: number of tokens to process becomes massive.
+- **subword** tokenization is the middle ground: 
+  - It keeps frequent words whole (like ``"the"`` or ``"cat"``), 
+  - but breaks rare or unseen words down into meaningful chunks (like ``["un", "believ", "able"]``).
+
+#### How it works 
+1. Building the Vocabulary (Training): A subword tokenizer builds this dictionary automatically by looking at a massive pile of text:
+    - pre-tokenization: starts by putting every single letter and punctuation mark into its dictionary 
+    - iteratively glues frequent combinations together (e.g., ``t`` + ``h`` becomes ``th``, then ``th`` + ``e`` becomes ``the``) and adds them to the dictionary. 
+    - stops once the dictionary reaches a predefined size (usually between 32K and 100K unique subwords).
+
+2. Tokenizing New Text (Inference): 
+   - if it sees a word it knows perfectly, it leaves it alone.
+   - if it sees a complex or new word, it aggressively chops it up until it matches pieces it does know.
+
+#### The big three algorithms
+1. Byte-Pair Encoding (BPE):
+- used by: GPT-2, GPT-3, GPT-4, LLaMA, RoBERTa.
+- how it thinks: pure frequency. It counts which two adjacent tokens appear next to each other the most often in the training data and merges them.
+- BPE gets its name because it was originally invented in 1994 as a data compression tool that merged pairs of raw computer bytes
+  - Sennrich et al. (2015) adapted it for text characters while keeping the historical title.
+  - Full circle moment: GPT-2 (2019) started treating text as raw UTF-8 bytes again. This modern version is call BBPE (byte-Level BPE)
+    - handle any language, emoji, or piece of code in the world using a very small base vocabulary, because everything eventually boils down to raw bytes.
+- tokenization example (real-world GPT-4): ``unforgettable story`` $\longrightarrow$ ``['un', 'forgettable', 'Ġstory']``
+- if the word was broken (hypothetical): ``unforgettable story`` $\longrightarrow$ ``['un', 'forget', 'table', 'Ġstory']``
+- putting tokens back into words (decoding):
+  - rule: assumes tokens belong to a single word by default, unless a token starts with a space marker (like ``Ġ`` or ``_``)
+  - mechanism: Uses clean, unmarked roots. The absence of a space marker implies continuity, meaning the tokenizer will seamlessly glue un + forget + table together into one word because there are no Ġ symbols breaking them up.
+- WHY ``Ġ``???
+  - for their Byte-Level BPE tokenizer, openai wanted a base vocabulary consisting of all 256 possible byte values (from 0 to 255)
+  - however, a lot of those 256 bytes are messy, invisible, or break text displays:
+    - Byte 32: Standard Space (Invisible)
+    - Byte 10: Newline (Breaks the line and moves your cursor down)
+    - Byte 0 to 31: Control characters (Like "Tab" or the system "Bell" sound)
+  - the famous little function in their code called ``bytes_to_unicode()`` shifts the invisible/weird ones by 256 to a safe, visible zone of unicodes.
+    - $32 \ \text{(space byte)} + 256 = 288 \ \text{(unicode character 288 is Ġ)}$
+    - $10 \ \text{(new line byte)} + 256 = 266 \ \text{(unicode character 266 is Ċ)}$
+
+2. WordPiece
+- Used by: BERT, DistilBERT.
+- How it thinks: likelihood according to a unigram language model. Instead of just counting what is most frequent, it runs a formula to see if merging two tokens, actually helps predict the training data better, or are they just together by coincidence.
+$$\text{score} = {\text{frequency of } AB \over {\text{frequency of } A \times \text{frequency of } B}}$$
+- tokenization example (real-world BERT): ``unforgettable story`` $\longrightarrow$ ``['un', '##for', '##get', '##table', 'story']``
+- putting tokens back into words (decoding):
+  - rule: assumes tokens are separate words by default, unless a token starts with the explicit continuation marker ``##``.
+  - mechanism: explicit chaining. every subword that belongs to the middle or end of a word must wear a badge ``##`` to prove it belongs to the parent word. When decoding, BERT strips the ``##`` and glues those pieces to the token before them, adding a space only when a token doesn't have the hashtag.
+
+3. Unigram
+- Used by: T5, ALBERT (often via a tool called SentencePiece).
+- How it thinks: Subtraction. While BPE and WordPiece start with individual letters and add combinations together, Unigram starts with a massive, giant vocabulary of full words and subwords, and iteratively deletes the least useful ones until it hits its target size.
+
+#### Why Subword Tokenization is a Superpower
+- No More Unknown Words: The model can read anything.
+- Grammar and Root Comprehension: It naturally learns prefixes and suffixes. By seeing ["un-", "-ing", "-ed", "-less"] across thousands of different words, the AI inherently understands grammatical structure without being explicitly taught grammar rules.
+- Efficiency: It drastically reduces the sequence length compared to character-tokenization, allowing models to process massive amounts of text much faster.
+
+</div>
 
 # References
 
