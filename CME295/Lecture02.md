@@ -528,6 +528,8 @@ or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
 ---
 
 ### 5. BERT deep dive
+
+#### 5.1 Basics
 BERT = Bidirectional Encoder Representations from Transformers
 
 Bidirectional self attention := the multi-head self attention block is unmasked non-causal.
@@ -537,7 +539,7 @@ Bidirectional self attention := the multi-head self attention block is unmasked 
 - excellent for tasks requiring a holistic understanding of a text (like classification or extraction, also Vision Transformers)
 - but obviously not usable for autoregressive text generation because of "peeking" into the future tokens.
 
-Context:
+Fun fact:
 - ELMo paper (Feb 2018): bidirectional LSTMs
 - Bert paper (Oct 2018): bidirectional Transformers
 
@@ -547,10 +549,18 @@ Some special tokens:
 - `[MASK]`, for "masking", masks some tokens
 
 Multi-stage trainings:
-- **Step 1:** pretraining with proxy tasks (MLM + NSP)
-  - learns embeddings
-- **Step 2:** finetuning for given end task
-  - attach a head (typically a linear projection + Softmax) for the end task (typically classification)
+- **Step 1: pre-training with proxy tasks**
+  - MLM and NSP
+  - over a massive unlabelled corpus
+  - expensive and slow
+  - learns weights and embeddings
+- **Step 2: fine-tuning for given end task**
+  - take the finished checkpoint from step 1 as starting point,
+  - attach a task-specific head (typically a linear projection + Softmax), and
+  - continue training for the end task (typically classification)
+  - usually on a much smaller, labelled dataset
+  - cheap and fast
+  - given a clean, normal, complete (i.e. no mask tokens, etc.) input sentence  
 
 Pros:
 - makes use of transfer learning
@@ -562,14 +572,97 @@ Cons:
 - not suited for generation tasks 
 - finetuning is a required step
 
+#### 5.1 Architecture 
+
+##### 5.1.2 Input processing
+
 WordPiece algorithm: 
 - tokenizer trained on a training set beforehand
 - vocab size ~30K
 - great at detecting common particles
 
+Input/token embeddings:
+- gigantic embedding lookup table
+- learn an embedding for each token (the sub-word representations generated via WordPiece tokenization) of the vocab
+
+Positional encoding:
+- fully-learnable: vectors start with random initialization and are optimized via backprop alongside the rest of the network during pre-training
+- absolute addressing: every index/position in a sequence is assigned its own unique, dedicated embedding vector
+- added to input embeddings
+- therefore, we have a hard cap on sequence length: in the original setup, 512 tokens
+
+Segment encoding:
+- vectors indicating if a token belongs to sentence/segment A or sentence/segment B (used for the NSP task)
+- also learned
+- added to input embeddings: same vector to all tokens of segment A 
+- Note: this has been challenged later on.
+
+##### 5.1.3 Encoder-only model
+
+Model:
+- encoder part of the original transformers paper
+  - unmasked multihead self attention & post layer norm  
+  - feed forward (ffn) & post layer norm
+
+Goal:
+- leverage the transformer’s self-attention mechanism 
+- to extract the _features_ needed for NLP tasks
+- and use learned embedding for classification-oriented tasks
+
+##### 5.1.4 Pre-training proxy tasks
+
+###### 5.1.4.1 Masked Language Modeling:
+Goal:
+- force the model to build deep bidirectional context by predicting missing tokens using clues from both the left and the right sides of a sequence simultaneously.
+
+Data preprocessing:
+- target token selection 
+  - out of all subword tokens in an input sequence, 15% are randomly selected as target tokens to be predicted, let's call this subset of positions $M$
+    - loss is calculated over selected positions in $M$
+    - the remaining 85% are left alone and are completely ignored by the loss function calculation
+- target token treatment split
+  - for the chosen tokens in $M$, the input is altered using three different strategies
+    - 80% of the time: replaced with the special token [MASK].
+    - 10% of the time: kept exactly as the original word.
+    - 10% of the time: replaced with a completely random word from the vocabulary.
+- gold labels
+  - the original tokens at the altered positions are recorded as the targets $y_i$
+
+Forward pass: prediction and loss calculation
+  - hidden vector $h_i \in \mathbb{R}^d$ is computed for every token at position $i$ in the corrupted input sequence by the transformer blocks
+  - MLM head: for every position $i$ in $M$, whose true token is $y_i$,
+    - transform sublayer (hidden size -> hidden size): vector $g_i \in \mathbb{R}^d$ is $$g_i = \text{LayerNorm}(\text{GELU}( W_1 h_i + b_1))$$
+    - linear layer (hidden size -> vocab. size): logit vector $z_i \in \mathbb{R}^{|V|}$ is $$z_i = W_2 \, g_i + b_2$$ where $W_2$ is tied to the input token embedding matrix. 
+    - softmax: predicted probability distribution that a word $w$ in the entire vocabulary appears at position $i$ is computed as $$P (w \mid \text{context})_i = \frac{\exp (z_{i,w})}{\sum_{w'\in V} \exp (z_{i,w'})}$$  
+    - loss: cross-entropy between the predicted distribution and a one-hot target becomes the negative log likelihood the model assigned to the correct class: $$\ell_i = -\log P(y_i \mid \text{context})_i$$
+      (so the model is penalized more heavily when little probability is put on the right answer)
+  - average over $M$: total loss would be average loss over the target tokens: $$\mathcal{L}_{\text{MLM}} = \frac{1}{|M|} \sum_{i \in M} \ell_i = -\frac{1}{|M|} \sum_{i \in M} \log P(y_i \mid \text{context})_i$$
+
+Training signal design:
+- 80% of target tokens were replaced with the special token [MASK] in order to force the model to predict from **bidirectional** context
+- but why not **all** target tokens were replaced with [MASK]?
+  - after progressing a bit in the training, the model could learn a shortcut that loss can be minimized by just predicting good representations for masked positions, and the other positions don't matter.
+  - in this way, we will end up with rich contextual representation only at positions where there is the [MASK] token 
+  - another issue is that we'd have a train/test mismatch: corruption with a mask token does not happen during inference. This means we would later test the model out of training distribution.
+- fix/corrective pressure: we need to make the model uncertain about which tokens matter in the loss computation
+  - a.k.a. we need to have non-mask tokens play a part in loss computation
+  - but as the main signal comes from masked tokens, we'd better keep the non-mask tokens share much smaller
+  - this justifies to leave a rather small portion of tokens unmasked.
+- Unmasked words:
+  - we can unmask the words and leave them as they are.
+  - hidden danger: if too many words are unchanged, the prediction task for the same token become a trivial copy operation
+    - the answer is sitting right there in the input. The model can ace those with no learning, diluting the training signal
+    - model might be tempted toward learning the copy-the-input shortcut
+    - so the unchanged fraction also has to stay small
+  - to prevent the model from blindly trusting the observed token identity, we can replace some words with other random words
+  - hidden danger: if too many words are changed randomly, the prediction for the neighboring tokens becomes less reliable
+    - we are at the end of the day polluting/corrupting the input by this trick
+    - even worse, the neighbors you're relying on to reconstruct a word might also themselves be random garbage
+    - so the random fraction has to stay small
+
 <div style="border-left: 4px solid #888; padding-left: 1em; margin: 1em 0;">
 
-### 🔬 Deep Dive: Subword tokenization
+### My side track: Subword tokenization
 
 #### Motivation 
 - main issue with **word-based** tokenizers: **out-of-vocabulary (OOV) words**. 
@@ -592,7 +685,7 @@ WordPiece algorithm:
 #### The big three algorithms
 1. Byte-Pair Encoding (BPE):
 - used by: GPT-2, GPT-3, GPT-4, LLaMA, RoBERTa.
-- how it thinks: pure frequency. It counts which two adjacent tokens appear next to each other the most often in the training data and merges them.
+- how it thinks: **pure frequency**. It counts which two adjacent tokens appear next to each other the most often in the training data and merges them.
 - BPE gets its name because it was originally invented in 1994 as a data compression tool that merged pairs of raw computer bytes
   - Sennrich et al. (2015) adapted it for text characters while keeping the historical title.
   - Full circle moment: GPT-2 (2019) started treating text as raw UTF-8 bytes again. This modern version is call BBPE (byte-Level BPE)
@@ -614,7 +707,7 @@ WordPiece algorithm:
 
 2. WordPiece
 - Used by: BERT, DistilBERT.
-- How it thinks: likelihood according to a unigram language model. Instead of just counting what is most frequent, it runs a formula to see if merging two tokens, actually helps predict the training data better, or are they just together by coincidence.
+- How it thinks: **likelihood** according to a unigram language model. Instead of just counting what is most frequent, it runs a formula to see if merging two tokens, actually helps predict the training data better, or are they just together by coincidence.
 $$\text{score} = {\text{frequency of } AB \over {\text{frequency of } A \times \text{frequency of } B}}$$
 - tokenization example (real-world BERT): ``unforgettable story`` $\longrightarrow$ ``['un', '##for', '##get', '##table', 'story']``
 - putting tokens back into words (decoding):
@@ -623,7 +716,7 @@ $$\text{score} = {\text{frequency of } AB \over {\text{frequency of } A \times \
 
 3. Unigram
 - Used by: T5, ALBERT (often via a tool called SentencePiece).
-- How it thinks: Subtraction. While BPE and WordPiece start with individual letters and add combinations together, Unigram starts with a massive, giant vocabulary of full words and subwords, and iteratively deletes the least useful ones until it hits its target size.
+- How it thinks: **Subtraction**. While BPE and WordPiece start with individual letters and add combinations together, Unigram starts with a massive, giant vocabulary of full words and subwords, and iteratively deletes the least useful ones until it hits its target size.
 
 #### Why Subword Tokenization is a Superpower
 - No More Unknown Words: The model can read anything.
