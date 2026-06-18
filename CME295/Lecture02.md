@@ -71,17 +71,17 @@ Define $f(k) := \sum_i \cos(w_i k)$, so that $e_m \cdot e_n = f(m - n)$. Two obs
 
 2. **Global maximum at $k = 0$.** For any $k$,
 $$
-f(k) = \sum_i \cos(w_i k) \le \sum_i 1 = \tfrac{d}{2} = f(0),
+f(k) = \sum_i \cos(w_i k) \le \sum_i 1 = \frac{d}{2} = f(0),
 $$
 with equality iff every $w_i k \in 2\pi\mathbb{Z}$. Because the $w_i$ form a geometric sequence with irrational ratio relative to $2\pi$, this only holds at $k = 0$. 
 Hence, $e_m \cdot e_n$ is uniquely maximized when $m = n$.
 
 3. **Local monotonic decrease.** Taylor expanding around $k=0$,
 $$
-f(k) = \sum_i \Big(1 - \tfrac{(w_i k)^2}{2} + O((w_i k)^4)\Big)
-= \tfrac{d}{2} - \tfrac{k^2}{2}\sum_i w_i^2 + O(k^4).
+f(k) = \sum_i \Big(1 - \frac{(w_i k)^2}{2} + O((w_i k)^4)\Big)
+= \frac{d}{2} - \frac{k^2}{2}\sum_i w_i^2 + O(k^4).
 $$
-The leading correction is $-\tfrac{k^2}{2} S$ with $S = \sum_i w_i^2 > 0$, so $f$ is strictly decreasing in $|k|$ on a neighborhood of $0$. Equivalently, $\tfrac{d}{dk}f(k) = -\sum_i w_i \sin(w_i k)$, which is negative for small $k > 0$ since every term $w_i \sin(w_i k) > 0$ when $0 < w_i k < \pi$ — and this holds simultaneously for all $i$ whenever $0 < k < \pi / w_0 = \pi$ (the largest $w_i = w_0 = 1$).
+The leading correction is $-\frac{k^2}{2} S$ with $S = \sum_i w_i^2 > 0$, so $f$ is strictly decreasing in $|k|$ on a neighborhood of $0$. Equivalently, $\frac{d}{dk}f(k) = -\sum_i w_i \sin(w_i k)$, which is negative for small $k > 0$ since every term $w_i \sin(w_i k) > 0$ when $0 < w_i k < \pi$ — and this holds simultaneously for all $i$ whenever $0 < k < \pi / w_0 = \pi$ (the largest $w_i = w_0 = 1$).
 
 **Combining (2) and (3):** the dot product is maximized at $m=n$, and for $|m-n|$ in the local regime where all $w_i |m-n| < \pi$, the dot product is a strictly decreasing function of $|m-n|$. $\blacksquare$
 
@@ -543,11 +543,6 @@ Fun fact:
 - ELMo paper (Feb 2018): bidirectional LSTMs
 - Bert paper (Oct 2018): bidirectional Transformers
 
-Some special tokens:
-- `[CLS]`, for "classify", marks the beginning of the input/sequence 
-- `[SEP]`, for "separator", separates sentences
-- `[MASK]`, for "masking", masks some tokens
-
 Multi-stage trainings:
 - **Step 1: pre-training with proxy tasks**
   - MLM and NSP
@@ -572,9 +567,14 @@ Cons:
 - not suited for generation tasks 
 - finetuning is a required step
 
-#### 5.1 Architecture 
+#### 5.2 Architecture 
 
-##### 5.1.2 Input processing
+Hyperparameters:
+- $L$ number of transformer layers
+- $A$ number of attention heads operating in parallel, within each layer
+- $H$ hidden layer size a.k.a. embeddings dimension
+
+##### 5.2.2 Input processing
 
 WordPiece algorithm: 
 - tokenizer trained on a training set beforehand
@@ -597,7 +597,25 @@ Segment encoding:
 - added to input embeddings: same vector to all tokens of segment A 
 - Note: this has been challenged later on.
 
-##### 5.1.3 Encoder-only model
+Final input embedding:
+- the three embeddings are summed element-wise per position: token embedding + positional encoding + segment encoding
+
+Some special tokens:
+- `[CLS]`, for "classify", marks the beginning of the input/sequence
+  - its final hidden state is used as the aggregate sequence representation (read by NSP, and later by fine-tuning classification heads)
+- `[SEP]`, for "separator", separates sentences and marks the end
+- `[MASK]`, for "masking", masks some tokens (used by MLM corruption)
+
+Training example construction (preprocessing):
+- a single sequence serves both pre-training tasks (MLM and NSP)
+  - it is built once and corrupted, then both objectives read off the same forward pass
+- sequence layout: `[CLS] segment A [SEP] segment B [SEP]`
+- the result: one corrupted, sentence-pair sequence carrying both 
+  - a sequence-level label ($y$ for NSP)
+  - and per-token labels ($y_i$ for $i \in M$ for MLM)
+  - (see below for more info)
+
+##### 5.2.3 Encoder-only model
 
 Model:
 - encoder part of the original transformers paper
@@ -609,15 +627,15 @@ Goal:
 - to extract the _features_ needed for NLP tasks
 - and use learned embedding for classification-oriented tasks
 
-##### 5.1.4 Pre-training proxy tasks
+##### 5.2.4 Pre-training proxy tasks
 
-###### 5.1.4.1 Masked Language Modeling:
+###### 5.2.4.1 Masked Language Modeling:
 Goal:
 - force the model to build deep bidirectional context by predicting missing tokens using clues from both the left and the right sides of a sequence simultaneously.
 
 Data preprocessing:
 - target token selection 
-  - out of all subword tokens in an input sequence, 15% are randomly selected as target tokens to be predicted, let's call this subset of positions $M$
+  - out of all subword tokens in an input sequence (i.e. excluding `[CLS]` / `[SEP]`), 15% are randomly selected as target tokens to be predicted, let's call this subset of positions $M$
     - loss is calculated over selected positions in $M$
     - the remaining 85% are left alone and are completely ignored by the loss function calculation
 - target token treatment split
@@ -631,7 +649,7 @@ Data preprocessing:
 Forward pass: prediction and loss calculation
   - hidden vector $h_i \in \mathbb{R}^d$ is computed for every token at position $i$ in the corrupted input sequence by the transformer blocks
   - MLM head: for every position $i$ in $M$, whose true token is $y_i$,
-    - transform sublayer (hidden size -> hidden size): vector $g_i \in \mathbb{R}^d$ is $$g_i = \text{LayerNorm}(\text{GELU}( W_1 h_i + b_1))$$
+    - (optional; used in BERT) transform sublayer (hidden size -> hidden size): vector $g_i \in \mathbb{R}^d$ is $$g_i = \text{LayerNorm}(\text{GELU}( W_1 h_i + b_1))$$
     - linear layer (hidden size -> vocab. size): logit vector $z_i \in \mathbb{R}^{|V|}$ is $$z_i = W_2 \, g_i + b_2$$ where $W_2$ is tied to the input token embedding matrix. 
     - softmax: predicted probability distribution that a word $w$ in the entire vocabulary appears at position $i$ is computed as $$P (w \mid \text{context})_i = \frac{\exp (z_{i,w})}{\sum_{w'\in V} \exp (z_{i,w'})}$$  
     - loss: cross-entropy between the predicted distribution and a one-hot target becomes the negative log likelihood the model assigned to the correct class: $$\ell_i = -\log P(y_i \mid \text{context})_i$$
@@ -659,6 +677,38 @@ Training signal design:
     - we are at the end of the day polluting/corrupting the input by this trick
     - even worse, the neighbors you're relying on to reconstruct a word might also themselves be random garbage
     - so the random fraction has to stay small
+
+###### 5.2.4.2 Next Sentence Prediction:
+Goal:
+- force the model to build understanding of relationships *between* sentences (not just within them), so that downstream tasks relying on sentence-pair reasoning (e.g., question answering, natural language inference) have useful representations to build on.
+- MLM teaches token-level / intra-sentence context; NSP targets inter-sentence coherence.
+
+Data preprocessing:
+- label construction (50/50 split)
+  - 50% of the time: B is the actual next segment that followed A in the corpus → label `IsNext`
+  - 50% of the time: B is a random segment drawn from elsewhere in the corpus → label `NotNext`
+  - so NSP is a binary classification task: did B genuinely follow A?
+- gold label
+  - $y \in \{\text{IsNext}, \text{NotNext}\}$ recorded for the pair
+
+Forward pass: prediction and loss calculation
+  - the sequence is processed by the transformer blocks; let $h_{\text{[CLS]}} \in \mathbb{R}^d$ be the final hidden vector at the [CLS] position
+  - NSP head: a single classification layer on top of the [CLS] representation,
+    - (optional; used in BERT) pooler: $c = \text{tanh}(W_p \, h_{\text{[CLS]}} + b_p)$, a dense layer producing the pooled representation $c \in \mathbb{R}^d$
+    - linear layer (hidden size -> 2): logit vector $z \in \mathbb{R}^2$ is $$z = W_{\text{NSP}} \, c + b_{\text{NSP}}$$
+    - softmax: predicted probability that the pair (A, B) belongs to class $k \, (k \in \{\text{IsNext}, \text{NotNext}\})$ $$P(k \mid A, B) = \frac{\exp(z_k)}{\sum_{k' \in \{0,1\}} \exp(z_{k'})}$$
+    - loss: binary cross-entropy (2-class) as the negative log likelihood of the correct label $$\ell_{\text{NSP}} = -\log P(y \mid A, B)$$
+  - note: unlike MLM, NSP produces a single prediction per *sequence* (from [CLS]), not one per token
+
+Total pre-training loss:
+- BERT is trained on both objectives jointly; the total loss is their sum $$\mathcal{L} = \mathcal{L}_{\text{MLM}} + \mathcal{L}_{\text{NSP}}$$
+- both losses come from the same forward pass over the same corrupted, sentence-pair input
+
+Training signal design / critique:
+- intent: give the model an explicit signal for inter-sentence relationships, which token-level MLM does not directly provide
+- known weakness: the random-segment negative is often *too easy* — B is usually about a completely different topic than A, so the model can succeed using topic/word-overlap cues alone, without learning genuine coherence or ordering.
+- the task also conflates two things: topic prediction (is B about the same subject?) and coherence (does B actually follow A?). The easy topic signal dominates, so little coherence is learned.
+- later findings: RoBERTa dropped NSP entirely and matched/beat BERT, suggesting NSP contributed little. ALBERT replaced it with Sentence Order Prediction (SOP) — same two consecutive segments, but the negative is the *same* pair with A and B swapped, which removes the topic shortcut and forces the model to learn ordering/coherence specifically.
 
 <div style="border-left: 4px solid #888; padding-left: 1em; margin: 1em 0;">
 
@@ -702,8 +752,8 @@ Training signal design:
     - Byte 10: Newline (Breaks the line and moves your cursor down)
     - Byte 0 to 31: Control characters (Like "Tab" or the system "Bell" sound)
   - the famous little function in their code called ``bytes_to_unicode()`` shifts the invisible/weird ones by 256 to a safe, visible zone of unicodes.
-    - $32 \ \text{(space byte)} + 256 = 288 \ \text{(unicode character 288 is Ġ)}$
-    - $10 \ \text{(new line byte)} + 256 = 266 \ \text{(unicode character 266 is Ċ)}$
+    - $32 \ \text{(space byte)} + 256 = 288 \ \text{(Unicode character 288 is Ġ)}$
+    - $10 \ \text{(new line byte)} + 256 = 266 \ \text{(Unicode character 266 is Ċ)}$
 
 2. WordPiece
 - Used by: BERT, DistilBERT.
