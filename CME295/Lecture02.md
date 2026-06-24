@@ -5,9 +5,9 @@
 - **Slides:** https://cme295.stanford.edu/slides/fall25-cme295-lecture2.pdf
 - **Notes taken by:** Elnaz Shafaei
 
-## Notes
+Notes:
 
-### 1. Position embeddings
+## 1. Position embeddings
 - **Motivation:**
   - self-attention by itself is permutation-invariant
   - meaning it doesn’t know whether a token came first or last.
@@ -16,12 +16,12 @@
   - learned positional embeddings _vs_ hardcoded/static positional embeddings
   - absolute positional information _vs_ relative positional information
 
-#### 1.1 Absolute positional embeddings
+### 1.1 Absolute positional embeddings
 
 - We have a unique positional embedding for each position in the sequence.
 - The positional embedding is added to the input.
 
-##### 1.1.1 learned (absolute) positional embeddings
+#### 1.1.1 learned (absolute) positional embeddings
 - how it works:
   - model has a trainable vector for each position $p_i$
   - and input becomes $x_i + p_i$ where $p_i$ is optimized during training
@@ -38,7 +38,7 @@
     - adjacent positions get similar embeddings,
     - or that the embedding of position $m+k$ relates to position $m$ in any consistent way.
 
-##### 1.1.2. hardcoded (absolute) positional embeddings: sinusoidal embeddings
+#### 1.1.2. hardcoded (absolute) positional embeddings: sinusoidal embeddings
 Main idea: tokens that are closer in position should have positional embeddings that are closer in vector space (i.e. higher dot product), and farther positions should have less similar embeddings.
 - sinusoidal embeddings were proposed in the original attention paper, kinda obsolete now
 - encode positions as vectors, add these vectors to input token vectors
@@ -110,7 +110,7 @@ Sinusoidal embeddings (contd.)
     - **empirical track record.** The original Transformer paper claimed extrapolation as a benefit of sinusoidal embeddings, but Press et al. (ALiBi, 2021) showed clearly that vanilla sinusoidal Transformers degrade quickly past their training length. This motivated ALiBi and, later, RoPE + length-extension techniques (position interpolation, NTK-aware scaling, YaRN), all of which try to make the *downstream weights* behave sensibly at unseen positions — not just define an encoding there.
     - **slogan:** an encoding that is defined at long positions is *necessary* for length generalization, but nowhere near *sufficient*. The trained weights have to play along too.
 
-#### 1.2 Relative positional embeddings
+### 1.2 Relative positional embeddings
 - What matters in language is usually relative position (e.g., positions 2 tokens apart or **distance**), not absolute position (e.g., position 10 and position 12): 
   - "the cat sat" should mean the same thing whether it starts at token 0 or token 1000. 
   - with sinusoidal embeddings the model has to learn this invariance from data: wasteful and imperfect.
@@ -128,7 +128,7 @@ Sinusoidal embeddings (contd.)
   - ALiBi (Attention with Linear Biases):
   - rotary positional embeddings (RoPE): dominant in frontier LLMs nowadays
 
-##### 1.2.1. relative positional information via attention bias
+#### 1.2.1. via attention bias
 - we can do this by adding a _bias_ to the dot product of the query and key vectors,
 - this bias value should be large for tokens closer to the query, and small for tokens further away from the query.
 
@@ -138,7 +138,7 @@ $$\text{softmax}\left({q_i k_j \over \sqrt{d_k}} + \text{bias}(i,j)\right) $$
 
 Different implementations of the bias term:
 
-###### 1.2.1.1. **Relative positional bias (T5 paper):**
+##### 1.2.1.1. Relative positional bias (T5 paper)
 
 bias is learned per head, as a function of the relative distance $i-j$.
 $$
@@ -177,7 +177,7 @@ cons:
     - extra matrix addition in self-attention
     - changes in every step --> difficult for KV cache
 
-###### 1.2.1.2. **ALiBi (Attention with Linear Biases):**
+##### 1.2.1.2. ALiBi (Attention with Linear Biases)
 - bias is linear in the distance, deterministic, not bounded. Each head $h$ has a fixed (not learned) slope $\mu_h$, typically chosen as a geometric sequence over heads.
 $$
 \text{bias}(i,j) = \mu \cdot (j-i)
@@ -199,7 +199,7 @@ Con for both 'attention bias' approaches:
   - it doesn't interact with the content of the vectors $q$ and $k$
   - so it can't express direction-dependent interactions between content and position (cf. RoPE).
 
-##### 1.2.2. relative positional information via rotary embeddings
+#### 1.2.2. via rotary embeddings
 
 **RoPE (Rotary Positional Embeddings):**
 - key insight: rotate $q$ and $k$ by angles proportional to their absolute positions
@@ -343,7 +343,7 @@ class RoPEAttention(torch.nn.Module):
 
 ---
 
-### 2. Layer normalization
+## 2. Layer normalization
 why? 
 - helps stabilize and accelerate training
 - prevents activations from growing too large
@@ -354,6 +354,8 @@ why?
 Batch normalization?
 - BN normalizes across the batch dimension → not used in transformers
 - LN normalizes across the feature dimension 
+
+### 2.1. Post norm
 
 **Original paper**
 - **post-norm**
@@ -387,6 +389,8 @@ or using pytorch built-in normalization `layer_norm = nn.LayerNorm(dim)`
 
 ---
 
+### 2.2. Pre norm
+
 **Xiong et al. (2020)**
 - "On Layer Normalization in the Transformer Architecture"
 - **pre-norm**
@@ -394,6 +398,9 @@ $$\text{output} = x + \text{SubLayer}(\text{LayerNorm}(x))$$
 - **before** the sublayer is applied
 
 ---
+
+### 2.3. RMS Norm
+
 **Zhang et al. (2019)**
 - why? convergence property is comparable, but with fewer parameters (and therefore quicker)
 - Root Mean Square Layer Normalization (RMS LayerNorm)
@@ -425,19 +432,19 @@ or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
 
 ---
 
-### 3. Attention approximation
+## 3. Attention approximation
 - **Problem:** standard self-attention has time and memory complexity of $O(N^2)$
   - in sequence length $N$
   - since each token attends to every other token
 - So we need a more tractable solution, ideally without hurting performance
   - aka we need to find a balance in this tradeoff: _global connectivity_ vs. _efficiency_ 
 
-#### 3.1. restricting the attention computations 
+### 3.1. restricting the attention computations 
 
 - **idea:** instead of computing the full attention matrix, compute a **sparse attention matrix**
 - i.e. each token only attends to a small **subset of tokens**
 
-**Sliding Window Attention (SWA)**
+#### 3.1.1. Sliding Window Attention (SWA)
 - each token attends only to its $W$ nearest neighbors (a **local** window)
 - complexity drops from $O(N^2)$ to $O(W\cdot N)$ where $W$ is window size
   - people often call this "linear attention" in practice
@@ -446,6 +453,9 @@ or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
   - interleaving local and global attention layers
   - analogous to receptive field growth in stacked CNNs
   - used in e.g. **Mistral** models
+
+#### 3.1.2. Dilated attention 
+#### 3.1.3. Global attention on a few tokens
 
 **LongFormer (Beltagy et al., 2020)**
 - combines:
@@ -458,7 +468,7 @@ or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
   - $W$: local window size
   - $G$: number of global-attention tokens
 
-#### 3.2. sharing attention heads 
+### 3.2. sharing attention heads 
 - **idea:** instead of having a projection matrix per head, share the same projection matrix across heads
   - more specifically, group Key/Value matrices and share each group between several Query matrices
 - **question:** why do we share keys and values and not the queries?
@@ -473,6 +483,10 @@ or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
   - a key matrix $K_G$ and a value matrix $V_G$ that are shared between ${H \over G}$ query matrices: $Q_{(G-1) {H \over G} + 1}, Q_{(G-1) {H \over G} + 2}, \cdots, Q_{H}$,
 - **variations:**
 
+#### 3.2.1. Multi-Head attention (KV=Q=H)
+#### 3.2.2. Grouped-Query attention (1<G=KV<Q=H)
+#### 3.2.3. Multi-Query attention (1=KV<Q=H)
+
 <table>
   <thead>
     <tr style="background-color: #d3d3d3;"><th>Variant</th><th><em>G</em> (# KV groups)</th><th>Example models</th></tr>
@@ -486,7 +500,11 @@ or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
 
 ---
 
-### 4. Transformer-based models
+## 4. Transformer-based models
+
+### 4.1. Encoder-decoder 
+### 4.2. Encoder only
+### 4.3. Decoder only
 
 <table>
   <thead>
@@ -527,9 +545,9 @@ or using pytorch built-in normalization `rms_norm = nn.RMSNorm(dim)`
 
 ---
 
-### 5. BERT deep dive
+## 5. BERT deep dive
 
-#### 5.1 Basics
+### 5.1 Basics
 BERT = Bidirectional Encoder Representations from Transformers
 
 Bidirectional self attention := the multi-head self attention block is unmasked non-causal.
@@ -567,14 +585,16 @@ Cons:
 - not suited for generation tasks 
 - finetuning is a required step
 
-#### 5.2 Architecture 
+---
+
+### 5.2 Architecture 
 
 Hyperparameters:
 - $L$ number of transformer layers
 - $A$ number of attention heads operating in parallel, within each layer
 - $H$ hidden layer size a.k.a. embeddings dimension
 
-##### 5.2.2 Input processing
+#### 5.2.2 Input processing
 
 WordPiece algorithm: 
 - tokenizer trained on a training set beforehand
@@ -615,7 +635,9 @@ Training example construction (preprocessing):
   - and per-token labels ($y_i$ for $i \in M$ for MLM)
   - (see below for more info)
 
-##### 5.2.3 Encoder-only model
+---
+
+#### 5.2.3 Network: Encoder-only model
 
 Model:
 - encoder part of the original transformers paper
@@ -627,9 +649,11 @@ Goal:
 - to extract the _features_ needed for NLP tasks
 - and use learned embedding for classification-oriented tasks
 
-##### 5.2.4 Pre-training proxy tasks
+---
 
-###### 5.2.4.1 Masked Language Modeling:
+#### 5.2.4 Pre-training proxy tasks
+
+##### 5.2.4.1 Masked Language Modeling:
 Goal:
 - force the model to build deep bidirectional context by predicting missing tokens using clues from both the left and the right sides of a sequence simultaneously.
 
@@ -678,7 +702,7 @@ Training signal design:
     - even worse, the neighbors you're relying on to reconstruct a word might also themselves be random garbage
     - so the random fraction has to stay small
 
-###### 5.2.4.2 Next Sentence Prediction:
+##### 5.2.4.2 Next Sentence Prediction:
 Goal:
 - force the model to build understanding of relationships *between* sentences (not just within them), so that downstream tasks relying on sentence-pair reasoning (e.g., question answering, natural language inference) have useful representations to build on.
 - MLM teaches token-level / intra-sentence context; NSP targets inter-sentence coherence.
@@ -706,13 +730,19 @@ Total pre-training loss:
 
 Training signal design / critique:
 - intent: give the model an explicit signal for inter-sentence relationships, which token-level MLM does not directly provide
-- known weakness: the random-segment negative is often *too easy* — B is usually about a completely different topic than A, so the model can succeed using topic/word-overlap cues alone, without learning genuine coherence or ordering.
+- known weakness: the random-segment negative is often *too easy* — B is usually about a completely different <ins>topic</ins> than A, so the model can succeed using topic/word-overlap cues alone, without learning genuine <ins>coherence or ordering</ins>.
 - the task also conflates two things: topic prediction (is B about the same subject?) and coherence (does B actually follow A?). The easy topic signal dominates, so little coherence is learned.
 - later findings: RoBERTa dropped NSP entirely and matched/beat BERT, suggesting NSP contributed little. ALBERT replaced it with Sentence Order Prediction (SOP) — same two consecutive segments, but the negative is the *same* pair with A and B swapped, which removes the topic shortcut and forces the model to learn ordering/coherence specifically.
 
+---
+
+
 <div style="border-left: 4px solid #888; padding-left: 1em; margin: 1em 0;">
 
-### My side track: Subword tokenization
+## Appendix
+My side tracks
+
+### Subword tokenization
 
 #### Motivation 
 - main issue with **word-based** tokenizers: **out-of-vocabulary (OOV) words**. 
@@ -733,7 +763,15 @@ Training signal design / critique:
    - if it sees a complex or new word, it aggressively chops it up until it matches pieces it does know.
 
 #### The big three algorithms
-1. Byte-Pair Encoding (BPE):
+
+|  | **BPE** (Byte-Pair Encoding) | **WordPiece** | **Unigram** |
+|---|---|---|---|
+| **Used by** | GPT-2/3/4, LLaMA, RoBERTa | BERT, DistilBERT | T5, ALBERT (often via SentencePiece) |
+| **Build direction** | Bottom-up (merge from characters/bytes) | Bottom-up (merge from characters) | Top-down (prune from large vocab) |
+| **Core idea** | Pure frequency — merges the most frequent adjacent token pair | Likelihood — merges pairs that improve a unigram LM, not just co-occurrence | Subtraction — starts huge, deletes least useful pieces |
+| **Selection rule** | Highest pair count | `freq(AB) / (freq(A) × freq(B))` | Iteratively prune to target vocab size |
+
+##### Byte-Pair Encoding (BPE)
 - used by: GPT-2, GPT-3, GPT-4, LLaMA, RoBERTa.
 - how it thinks: **pure frequency**. It counts which two adjacent tokens appear next to each other the most often in the training data and merges them.
 - BPE gets its name because it was originally invented in 1994 as a data compression tool that merged pairs of raw computer bytes
@@ -755,7 +793,7 @@ Training signal design / critique:
     - $32 \ \text{(space byte)} + 256 = 288 \ \text{(Unicode character 288 is Ġ)}$
     - $10 \ \text{(new line byte)} + 256 = 266 \ \text{(Unicode character 266 is Ċ)}$
 
-2. WordPiece
+##### WordPiece
 - Used by: BERT, DistilBERT.
 - How it thinks: **likelihood** according to a unigram language model. Instead of just counting what is most frequent, it runs a formula to see if merging two tokens, actually helps predict the training data better, or are they just together by coincidence.
 $$\text{score} = {\text{frequency of } AB \over {\text{frequency of } A \times \text{frequency of } B}}$$
@@ -764,7 +802,7 @@ $$\text{score} = {\text{frequency of } AB \over {\text{frequency of } A \times \
   - rule: assumes tokens are separate words by default, unless a token starts with the explicit continuation marker ``##``.
   - mechanism: explicit chaining. every subword that belongs to the middle or end of a word must wear a badge ``##`` to prove it belongs to the parent word. When decoding, BERT strips the ``##`` and glues those pieces to the token before them, adding a space only when a token doesn't have the hashtag.
 
-3. Unigram
+##### Unigram
 - Used by: T5, ALBERT (often via a tool called SentencePiece).
 - How it thinks: **Subtraction**. While BPE and WordPiece start with individual letters and add combinations together, Unigram starts with a massive, giant vocabulary of full words and subwords, and iteratively deletes the least useful ones until it hits its target size.
 
