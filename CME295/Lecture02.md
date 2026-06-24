@@ -49,8 +49,9 @@ $$e_{m,2i} = \sin(w_i \cdot m)$$
 $$e_{m,2i+1} = \cos(w_i \cdot m)$$
 where $w_i = 10000^{-2i/d}$
 
----
-**A deep dive** (small deviation from the slides):
+<div style="border:1px solid #888; border-radius:6px; padding:12px;">
+
+**Going Deeper** ⟶ off-slides
 
 **Lemma.** Closer sinusoidal positional embeddings are more similar (in dot product), locally around $m=n$.
 
@@ -59,10 +60,12 @@ where $w_i = 10000^{-2i/d}$
 **Proof.** Let the embedding dimension be $d$ (even) with frequencies $w_i = 10000^{-2i/d}$ for $i = 0, \dots, d/2 - 1$. Then
 
 $$
-e_m \cdot e_n = \sum_i \big(e_{m,2i}\,e_{n,2i} + e_{m,2i+1}\,e_{n,2i+1}\big)
-= \sum_i \big(\sin(w_i m)\sin(w_i n) + \cos(w_i m)\cos(w_i n)\big)
-= \sum_i \cos\!\big(w_i m - w_i n\big)
-= \sum_i \cos\!\big(w_i (m - n)\big).
+\begin{align}
+e_m \cdot e_n &= \sum_i \big(e_{m,2i}\,e_{n,2i} + e_{m,2i+1}\,e_{n,2i+1}\big) \\
+&= \sum_i \big(\sin(w_i m)\sin(w_i n) + \cos(w_i m)\cos(w_i n)\big) \\
+&= \sum_i \cos\!\big(w_i m - w_i n\big) \\
+&= \sum_i \cos\!\big(w_i (m - n)\big).
+\end{align}
 $$
 
 Define $f(k) := \sum_i \cos(w_i k)$, so that $e_m \cdot e_n = f(m - n)$. Two observations:
@@ -89,9 +92,9 @@ The leading correction is $-\frac{k^2}{2} S$ with $S = \sum_i w_i^2 > 0$, so $f$
 
 See this figure for the dot product of embeddings for all position pairs https://kazemnejad.com/img/transformer_architecture_positional_encoding/time-steps_dot_product.png
 
----
+</div>
 
-Sinusoidal embeddings (contd.)
+Sinusoidal embeddings, Pros and Cons:
 - pros:
   - works at any sequence length; the formula is defined for arbitrary $m$, so no retraining is needed to handle longer inputs (in principle).
   - zero learnable parameters for the positional encoding; saves memory and removes a source of overfitting.
@@ -263,6 +266,7 @@ $$
 - $O(d)$ per token instead of $O(d^2)$, no sparse kernels needed, and trivially vectorizable on GPU.
 
 ```python
+# -------- Going Deeper ⟶ off-slides -------- #
 # RoPE implementation
 import torch
 
@@ -369,6 +373,8 @@ $$\sigma^2 = \frac{1}{d}\sum_{i=1}^d (x_i - \mu)^2$$
 - learnable parameters $\gamma, \beta$
 
 ```python
+# -------- Going Deeper ⟶ off-slides -------- #
+# Post Layer Norm implementation
 import torch
 import torch.nn as nn
  
@@ -376,8 +382,8 @@ class LayerNorm(nn.Module):
     def __init__(self, dim, eps=1e-5):
         super().__init__()
         self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
-        self.bias = nn.Parameter(torch.zeros(dim))
+        self.weight = nn.Parameter(torch.ones(dim)) # alpha
+        self.bias = nn.Parameter(torch.zeros(dim))  # beta
  
     def forward(self, x):
         mean = x.mean(dim=-1, keepdim=True)
@@ -409,6 +415,8 @@ $$\text{RMSNorm}(x) = \gamma \odot \frac{x}{\sqrt{\frac{1}{d} \sum_{i=1}^{d} x_i
 - learnable parameter $\gamma$
 
 ```python
+# -------- Going Deeper ⟶ off-slides -------- #
+# RMS Norm implementation
 import torch
 import torch.nn as nn
  
@@ -590,9 +598,20 @@ Cons:
 ### 5.2 Architecture 
 
 Hyperparameters:
-- $L$ number of transformer layers
+- $L$ number of transformer blocks/layers
 - $A$ number of attention heads operating in parallel, within each layer
 - $H$ hidden layer size a.k.a. embeddings dimension
+
+|  | L | H | A | Parameters |
+|---|---|---|---|---|
+| **BERT-Tiny** | 2 | 128 | 2 | 4M |
+| **BERT-Mini** | 4 | 256 | 4 | 11M |
+| **BERT-Small** | 4 | 512 | 8 | 30M |
+| **BERT-Medium** | 8 | 512 | 8 | 42M |
+| **BERT-Base** | 12 | 768 | 12 | 110M |
+| **BERT-Large** | 24 | 1024 | 16 | 340M |
+
+---
 
 #### 5.2.2 Input processing
 
@@ -625,6 +644,7 @@ Some special tokens:
   - its final hidden state is used as the aggregate sequence representation (read by NSP, and later by fine-tuning classification heads)
 - `[SEP]`, for "separator", separates sentences and marks the end
 - `[MASK]`, for "masking", masks some tokens (used by MLM corruption)
+- `[PAD]`, for "padding", fills up per-sentence tensors in a batch
 
 Training example construction (preprocessing):
 - a single sequence serves both pre-training tasks (MLM and NSP)
@@ -651,7 +671,9 @@ Goal:
 
 ---
 
-#### 5.2.4 Pre-training proxy tasks
+#### 5.2.4 Pre-training
+
+With two proxy tasks: MLM and NSP
 
 ##### 5.2.4.1 Masked Language Modeling:
 Goal:
@@ -680,7 +702,11 @@ Forward pass: prediction and loss calculation
       (so the model is penalized more heavily when little probability is put on the right answer)
   - average over $M$: total loss would be average loss over the target tokens: $$\mathcal{L}_{\text{MLM}} = \frac{1}{|M|} \sum_{i \in M} \ell_i = -\frac{1}{|M|} \sum_{i \in M} \log P(y_i \mid \text{context})_i$$
 
-Training signal design:
+<div style="border:1px solid #888; border-radius:6px; padding:12px;">
+
+**Going Deeper** ⟶ off-slides
+
+**Training signal design:**
 - 80% of target tokens were replaced with the special token [MASK] in order to force the model to predict from **bidirectional** context
 - but why not **all** target tokens were replaced with [MASK]?
   - after progressing a bit in the training, the model could learn a shortcut that loss can be minimized by just predicting good representations for masked positions, and the other positions don't matter.
@@ -690,7 +716,7 @@ Training signal design:
   - a.k.a. we need to have non-mask tokens play a part in loss computation
   - but as the main signal comes from masked tokens, we'd better keep the non-mask tokens share much smaller
   - this justifies to leave a rather small portion of tokens unmasked.
-- Unmasked words:
+- unmasked words:
   - we can unmask the words and leave them as they are.
   - hidden danger: if too many words are unchanged, the prediction task for the same token become a trivial copy operation
     - the answer is sitting right there in the input. The model can ace those with no learning, diluting the training signal
@@ -701,6 +727,8 @@ Training signal design:
     - we are at the end of the day polluting/corrupting the input by this trick
     - even worse, the neighbors you're relying on to reconstruct a word might also themselves be random garbage
     - so the random fraction has to stay small
+
+</div>
 
 ##### 5.2.4.2 Next Sentence Prediction:
 Goal:
@@ -728,16 +756,222 @@ Total pre-training loss:
 - BERT is trained on both objectives jointly; the total loss is their sum $$\mathcal{L} = \mathcal{L}_{\text{MLM}} + \mathcal{L}_{\text{NSP}}$$
 - both losses come from the same forward pass over the same corrupted, sentence-pair input
 
-Training signal design / critique:
+<div style="border:1px solid #888; border-radius:6px; padding:12px;">
+
+**Going Deeper** ⟶ off-slides
+
+**Training signal design / critique:**
 - intent: give the model an explicit signal for inter-sentence relationships, which token-level MLM does not directly provide
-- known weakness: the random-segment negative is often *too easy* — B is usually about a completely different <ins>topic</ins> than A, so the model can succeed using topic/word-overlap cues alone, without learning genuine <ins>coherence or ordering</ins>.
-- the task also conflates two things: topic prediction (is B about the same subject?) and coherence (does B actually follow A?). The easy topic signal dominates, so little coherence is learned.
-- later findings: RoBERTa dropped NSP entirely and matched/beat BERT, suggesting NSP contributed little. ALBERT replaced it with Sentence Order Prediction (SOP) — same two consecutive segments, but the negative is the *same* pair with A and B swapped, which removes the topic shortcut and forces the model to learn ordering/coherence specifically.
+- known weakness: the random-segment negative is often *too easy*
+  - B is usually about a completely different <ins>topic</ins> than A, so the model can succeed using topic/word-overlap cues alone, without learning genuine <ins>coherence or ordering</ins>.
+- the task also conflates two things:
+  - topic prediction (is B about the same subject?)
+  - and coherence (does B actually follow A?).
+- the easy topic signal dominates, so little coherence is learned.
+- later findings:
+  - RoBERTa dropped NSP entirely and matched/beat BERT, suggesting NSP contributed little.
+  - ALBERT replaced it with Sentence Order Prediction (SOP)
+    - same two consecutive segments, but the negative is the *same* pair with A and B swapped
+    - which removes the topic shortcut and forces the model to learn ordering/coherence specifically.
+
+</div>
 
 ---
 
+### 5.3. Fine-tuning
 
-<div style="border-left: 4px solid #888; padding-left: 1em; margin: 1em 0;">
+Goal:
+- adapt BERT's pretrained representations to a specific downstream task by continuing training on task-specific labeled data.
+
+How it works:
+- start from the pretrained weights rather than random initialization, so the model already encodes general language structure.
+- add a lightweight task-specific head (e.g. a linear classifier on the [CLS] token or per-token outputs) and train end-to-end.
+- typically, all layers are updated, but at a small learning rate to avoid destroying pretrained knowledge ("catastrophic forgetting").
+
+Practical considerations:
+- freezing early layers: optional. 
+  - lower layers capture general syntax/semantics and transfer well;
+  - freezing them cuts compute, and
+  - can help when labeled data is scarce
+  - at some cost to peak performance.
+- data efficiency:
+  - strong results are achievable with relatively little labeled data
+  - the closer the task and its data distribution are to the pretraining setup, the less is needed.
+- usually only a few epochs are required;
+  - fine-tuning is fast and cheap compared to pretraining. 
+
+Example use cases / fine-tuning tasks:
+  - token classification: assign a label to each token in the sequence.
+    - named entity recognition (NER)
+      - tag each token as person, location, organization, etc.
+    - extractive QA
+      - predict two per-token distributions
+        - the probability that each token is the start of the answer span and that it is the end
+      - then take the span with the highest combined score.
+  - sequence classification: assign a single label to the whole input.
+    - add a classification head on top of the [CLS] token's final hidden state
+    - sentiment analysis: predict positive/negative/neutral.
+    - Other examples:
+      - topic classification
+      - natural language inference (entailment between a sentence pair)
+
+### 5.4. Takeaways
+
+Benefits:
+- State-of-the-art results
+- ~True contextual representation of words
+- Adaptable to many classification tasks 
+ 
+Applications:
+- Widely used in the industry for anything related to encoding
+
+Limitations:
+- Context window size is limited
+- Computationally expensive: hard sell for low-latency/cost-sensitive applications
+- Training paradigm is complex: MLM/NSP + finetuning
+
+## 6. BERT Distillation
+
+### 6.1 Knowledge distillation
+
+Sources:
+- Hinton, Geoffrey, Oriol Vinyals, and Jeff Dean. "Dark knowledge." _TTIC Distinguished Lecture Series, 2 Oct. 2014, Toyota Technological Institute at Chicago._ Lecture slide deck, www.ttic.edu/dl/dark14.pdf (2014).
+- Hinton, Geoffrey, Oriol Vinyals, and Jeff Dean. "Distilling the knowledge in a neural network." _arXiv preprint_ [arXiv:1503.02531](https://arxiv.org/abs/1503.02531) (2015).
+
+#### 6.1.1. Soft targets
+Main idea:
+- training data $\longrightarrow$ a big ensemble of learned models $\longrightarrow$ small production model
+- the ensemble:
+  - implements a function from input to output
+  - forget the models in the ensemble and the way they are parameterized, and focus on the function
+  - after learning the ensemble, we have our hands on the function
+- questions: How can we transfer the function?
+
+Key insight: 
+- **Soft targets** are a way to transfer the function
+- > "The soft targets contain almost all the knowledge."
+- instead of directly learning the hard labels
+- They are the full probability distribution a trained model outputs across all classes
+  - not just the single correct answer,
+  - but the smaller probabilities it assigns to every other class too.
+  - the probabilities assigned to the wrong classes are referred to as "Dark knowledge"
+- They come straight out of the model's softmax layer that turns a raw logit score (a logit, $z_i$) for each class into probabilities
+  - but with one twist for distillation: a temperature $T$:
+  - $T$ divides each logit before exponentiating $$q_i = \frac{\exp(z_i / T)}{\sum_j \exp(z_j / T)}$$
+
+<div style="border:1px solid #888; border-radius:6px; padding:12px;">
+
+Example:
+
+| cow  | dog | cat | car  |                                                           |
+|------|-----|-----|------|-----------------------------------------------------------|
+| 0    | 1   | 0   | 0    | original hard targets                                     |
+| 10⁻⁶ | .9  | .1  | 10⁻⁹ | output of geometric ensemble  (i.e., $T=1$) |
+| .04  | .6  | .4  | .009 | softened output of ensemble with $T\approx 5$             |
+
+- the hard targets carry one bit of useful signal
+- the raw ensemble output buries the similarity structure in near-zero values (cat at .1 vs cow at 10⁻⁶),
+- softening with temperature, lifts those ratios into a range the student can actually learn from 
+  - cow (.05) now visibly outranks car (.005) in similarity to dog (.3)
+- raising $T$ produces a softer distribution
+
+Working out the example by hand:
+- given the teachers' output probabilities at $T=1$: $$q^{(1)} = [\,10^{-6},\ 0.9,\ 0.1,\ 10^{-9}\,] \quad \text{for [cow, dog, cat, car]} $$
+- recovering logits:
+  - $z_{\text{cow}} = \ln(10^{-6}) = -6\ln 10 = -13.8155$
+  - $z_{\text{dog}} = \ln(0.9) = -0.1054$
+  - $z_{\text{cat}} = \ln(0.1) = -\ln 10 = -2.3026$
+  - $z_{\text{car}} = \ln(10^{-9}) = -9\ln 10 = -20.7233$
+- divide by $T=5$
+  - $z_{\text{cow}}/5 = -2.7631$
+  - $z_{\text{dog}}/5 = -0.02107$
+  - $z_{\text{cat}}/5 = -0.46052$
+  - $z_{\text{car}}/5 = -4.14466$
+- exponentiate
+  - $\exp(-2.7631) = 0.063096$
+  - $\exp(-0.02107) = 0.979150$
+  - $\exp(-0.46052) = 0.630957$
+  - $\exp(-4.14466) = 0.015849$
+- normalizing sum:
+  - $Z = 0.063096 + 0.979150 + 0.630957 + 0.015849 = 1.689052$
+- normalize
+  - $q_{\text{cow}} = \frac{0.063096}{1.689052} = 0.03736$
+  - $q_{\text{dog}} = \frac{0.979150}{1.689052} = 0.57970$
+  - $q_{\text{cat}} = \frac{0.630957}{1.689052} = 0.37356$
+  - $q_{\text{car}} = \frac{0.015849}{1.689052} = 0.00938$
+
+</div>
+
+#### 6.1.2. How it works
+- run the teacher model at high temperature to produce soft targets
+- then train the small (student) model on those soft targets using the same high T.
+- after training, the student switches back to $T = 1$ for inference.
+
+#### 6.1.3. The loss function
+Weighted average of two losses
+1. **Soft loss.** cross-entropy* between student and teacher soft targets, with both softmaxes at high $T$.
+   - *equivalent to KL divergence, since the frozen teacher's entropy is constant, we get the same gradients.
+2. **Hard loss.** cross-entropy between student and the true labels, at $T = 1$.
+
+<div style="border:1px solid #888; border-radius:6px; padding:12px;">
+
+**Refresher:**
+- given the target probability distribution $p$, and predicted probability distribution $q$,
+  - Entopy measures ... 
+  - Cross-Entropy measures ...
+  - KL measures ...
+- generally, Cross-entropy = Entropy + KL $$H(p, q) = H(p) + D_{\text{KL}}(p \,\|\, q)$$
+  - target entropy is $$H(p) = -\sum_i p_i \ln p_i$$
+  - Cross-Entropy of $q$ relative to $p$ is $$H(p, q) = -\sum_i p_i \ln q_i$$
+  - KL divergence from $p$ to $q$ is $$D_{\text{KL}}(p \,\|\, q) = \sum_i p_i \ln \frac{p_i}{q_i}$$
+- when true label $p$ is <ins>one-hot encoded</ins> (i.e., single-label classification, or the hard loss case for the above loss function), where $c$ is the index of the correct class,
+  - target entropy is zero $$H(p)= - \left( (\sum_{i\neq c} 0 \cdot \ln 0) + (1 \cdot \ln 1) \right)= -\left( 0 + \ln 1\right) = 0$$
+  - therefore, Cross-entropy = KL $$H(p,q) = D_{\text{KL}}(p \,\|\, q)$$
+  - and both equal to the negative log-likelihood of the true class $$H(p,q) = D_{\text{KL}}(p \,\|\, q) = - \ln q_c$$
+  - as $$H(p, q) = - \left( (\sum_{i\neq c} 0 \cdot \ln q_i) + (1 \cdot \ln q_c) \right)= -\left( 0 + \ln q_c\right) = - \ln q_c$$
+  - and $$D_{\text{KL}}(p \,\|\, q) = (\sum_{i\neq c} 0 \cdot \ln {p_i \over q_i}) + (1 \cdot \ln {p_c \over q_c}) = 0 + \ln {p_c \over q_c} = \ln {1 \over q_c} = - \ln {q_c}$$
+
+</div>
+
+
+### 6.2. DistilBERT
+- BERT variant for efficiency (Sanh et al., 2019; Hugging Face)
+- distilled BERT into a smaller student
+  - number of layers halved: 12 $\rightarrow$ 6
+  - (hidden size and embeddings kept the same)
+  - ~40% fewer parameters than BERT-base (~66M vs 110M)
+- retained performance
+  - ~97% of BERT's performance on the GLUE benchmark
+- delivered efficiency 
+  - ~60% faster than BERT at inference on CPU
+  - ~71% faster on-device (iPhone 7 Plus)
+- trained with a triple loss
+  - distillation loss (i.e., soft loss)
+  - MLM loss (i.e., hard loss. standard masked-language-modeling supervised loss)
+  - cosine embedding loss (aligns student & teacher hidden-state directions)
+- student initialized from BERT (every other layer), not random
+
+### 6.3. RoBERTa
+- BERT variant for performance (Liu et al., 2019, FAIR)
+  - same architecture, better training recipe
+  - core finding: BERT was significantly UNDER-trained
+- training regime improvements:
+  - removing NSP/segment encodings: ~no effect / slight improvement
+  - static $\rightarrow$ dynamic masking (i.e. mask pattern changes across epochs)
+  - char-level to byte-level BPE 
+    - WHY: universality, not accuracy: eliminates [UNK]
+    - TRADEOFF: 
+      - slightly hurt some end-tasks
+      - adds ~15-20M params
+        - because of a bigger embedding matrix
+        - 30K char-level vocab $\rightarrow$ 50K byte-level vocab
+    - a deliberate robustness/generality choice, kept despite minor perf cost
+  - more data: 16 GB $\rightarrow$ 160 GB of pretraining corpus 
+  - bigger batches (matched compute): 
+    - BERT = 1M steps @ batch size 256
+    - RoBERTa = 31K steps @ batch size 8K  ($\approx$ equal compute via gradient accumulation)
+      - optimal in ablations: 125K steps @ batch size 2K
+- Result: +4% across benchmarks with same architecture
 
 ## Appendix
 My side tracks
@@ -810,8 +1044,6 @@ $$\text{score} = {\text{frequency of } AB \over {\text{frequency of } A \times \
 - No More Unknown Words: The model can read anything.
 - Grammar and Root Comprehension: It naturally learns prefixes and suffixes. By seeing ["un-", "-ing", "-ed", "-less"] across thousands of different words, the AI inherently understands grammatical structure without being explicitly taught grammar rules.
 - Efficiency: It drastically reduces the sequence length compared to character-tokenization, allowing models to process massive amounts of text much faster.
-
-</div>
 
 # References
 
