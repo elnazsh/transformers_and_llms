@@ -239,6 +239,60 @@ Two broad families:
 - **Idea (vLLM's PagedAttention):** borrow **virtual-memory paging** from operating systems. Split each sequence's KV cache into fixed-size **blocks** and store them in **non-contiguous** physical memory, with a per-sequence **block table** mapping logical block → physical block.
 - **Payoff:** near-eliminates fragmentation (waste drops to a few %), lets memory be allocated on demand as generation proceeds, and enables **sharing** identical blocks across sequences (e.g. a common prompt prefix, or parallel samples/beams) via copy-on-write. Higher effective batch size → much better throughput.
 
+<div style="border:1px solid #888; border-radius:6px; padding:12px;">
+
+#### Deep dive: PagedAttention
+
+*Source: "Efficient Memory Management for Large Language Model Serving with PagedAttention", Kwon et al., SOSP 2023 — the vLLM paper.*
+
+**Why the KV cache wastes memory in the first place.**
+The cache size is $2 \cdot L \cdot h \cdot d_h \cdot T \cdot b$ bytes per sequence, and the problem is $T$: when a request arrives we know the prompt length but **not** how many tokens it will generate. Pre-vLLM servers handled this by reserving one **contiguous** chunk big enough for the *maximum* possible length, up front (contiguity was required because attention kernels assumed a sequence's K/V sat in one flat array). That produces three distinct wastes:
+
+- **Internal fragmentation** — reserve 2048 slots, generate 100 → the other ~1948 are dead for the request's whole lifetime.
+- **Reserved-but-not-yet-used** — even slots a request *will* eventually use sit idle *now*, unusable by anyone else.
+- **External fragmentation** — differently-sized contiguous reservations chop free memory into odd-sized holes, none big enough for a new request even when total free bytes suffice.
+
+Measured in the paper, prior systems wasted **60–80%** of KV memory this way. Since KV memory caps how many requests can be **batched**, and larger batches keep the GPU busy, this waste directly throttles throughput.
+
+**The OS analogy (exact).**
+This is the problem an OS solves for RAM: give each process a contiguous-looking address space backed by scattered physical frames, via a page table.
+
+| OS concept | PagedAttention equivalent |
+|---|---|
+| process | a request / sequence |
+| virtual address space | the sequence's logical KV blocks (contiguous, token order) |
+| page | **KV block** — a fixed slot for $B$ tokens' K and V |
+| physical frame | a physical KV block in a pre-allocated GPU pool |
+| page table | the per-sequence **block table** |
+
+A **KV block** stores the K and V of $B$ consecutive tokens (block size $B$, typically 16), i.e. $2 \cdot L \cdot h \cdot d_h \cdot B \cdot b$ bytes. At startup vLLM carves almost all free GPU memory into a flat pool of identical physical blocks managed by a free list.
+
+**How a sequence uses it.**
+- KV is addressed **logically** as block $0, 1, 2, \dots$ in token order.
+- The **block table** maps each logical block → the physical block where it actually lives; consecutive logical blocks land in physically *scattered* blocks.
+- Blocks are allocated **on demand** — a new physical block is pulled from the free list only when the current last block fills (every $B$ tokens). Generating 100 tokens with $B=16$ holds $\lceil 100/16 \rceil = 7$ blocks, not 2048 slots.
+
+Re-examining the three wastes: **internal fragmentation** shrinks to *at most one partially-filled block per sequence* (≤ $B-1$ tokens wasted, under 4% at $B=16$); **external fragmentation vanishes** because every block is the same size, so any free block fits any request; **reserved-but-unused** disappears because allocation is lazy instead of worst-case.
+
+**How does attention run over non-contiguous memory?**
+A standard kernel does one matmul $Q K^\top$ assuming $K$ is a contiguous $[T, d]$ tensor — broken once K/V are scattered. The **PagedAttention kernel** is block-aware: it walks the block table, and for each logical block looks up the physical block, gathers its K/V (up to $B$ tokens), computes the partial $QK^\top$ scores, and accumulates across blocks with a fused online softmax (FlashAttention-style). The gather-through-the-block-table happens *inside* the kernel; a small indirection cost, dwarfed by the throughput from bigger batches.
+
+**The bonus that pure "less waste" doesn't give you: sharing.**
+Because K/V now live in reference-counted blocks, different sequences can point their block tables at the **same** physical block:
+- **Shared prompt prefix** — one system prompt served to many users, or many samples from the same few-shot prompt: the prefix's KV is computed and stored **once**, shared by all (this is the basis of "prefix caching").
+- **Parallel sampling / beam search** — all candidates share the prompt blocks, and share generated blocks up to the point they diverge.
+
+Sharing is made safe with **copy-on-write**, exactly like OS `fork()`: blocks are ref-counted; shared blocks are read freely, but the moment one sequence writes into a block with ref-count > 1, *that single block* is copied to a fresh physical block and only that sequence's table is updated. You copy one 16-token block, not the whole sequence.
+
+**Costs / knobs.**
+- Needs the custom paged kernel (can't use an off-the-shelf dense-attention kernel).
+- Small per-step indirection + slightly less cache-friendly access; net throughput still wins large.
+- **Block size $B$** trades off kernel efficiency and table size (larger $B$) against last-block internal fragmentation (smaller $B$); 16 is the common sweet spot.
+
+**One-sentence version.** Treat the KV cache like OS virtual memory — fixed-size blocks, a per-sequence block table mapping logical→physical, on-demand allocation, and copy-on-write sharing — turning 60–80% waste into <4% and letting far more requests batch together, which is where the throughput comes from.
+
+</div>
+
 ### Speculative decoding  *(exact — reformulate the math)*
 - **Idea:** decoding is slow because it is sequential and each big-model step is memory-bound. Use a small, cheap **draft** model to *propose* several tokens, then have the large **target** model **verify** them all in a **single parallel** forward pass. Good proposals let us advance several tokens per target pass; the accept/reject rule guarantees the output is **distributed exactly as if sampled from the target model** — so there is *no* quality loss.
 - **Notation:** let $q(\cdot)$ be the draft model's next-token distribution and $p(\cdot)$ the target model's. *(The lecture writes $Q$ for the target and $P$ for the draft; below we follow the more common convention $q=$ draft, $p=$ target.)* For each token $x$ the draft proposes ($x \sim q$), verify it as follows:
@@ -274,6 +328,68 @@ Two broad families:
 ### Latent (compressed) attention — MLA  *(approximate — denser representation)*
 - **Goal:** shrink what the KV cache stores per token.
 - **Idea (DeepSeek's Multi-head Latent Attention):** instead of caching full-dimensional $K$ and $V$, project them **down** into a small shared **latent vector** $c_t \in \mathbb{R}^{d_c}$ with $d_c \ll h\,d_h$, and cache only $c_t$. During attention, $K$ and $V$ are reconstructed on the fly by **up-projecting** $c_t$. Only the compressed $c_t$ lives in memory, so the cache shrinks dramatically while retaining more information than GQA's head-sharing (reported to match or beat MHA quality).
+
+<div style="border:1px solid #888; border-radius:6px; padding:12px;">
+
+#### Deep dive: Multi-head Latent Attention (MLA)
+
+*Source: DeepSeek-V2 (Liu et al., 2024). Numbers below are that paper's config.*
+
+**Notation.** Hidden state of token $t$: $h_t \in \mathbb{R}^{d}$. $n_h$ = number of heads, $d_h$ = per-head dimension; full multi-head key/value width is $n_h d_h$. In DeepSeek-V2: $d = 5120$, $n_h = 128$, $d_h = 128$.
+
+**Baseline — vanilla MHA caches K and V directly.** Per token, per layer, standard attention projects and then stores both:
+
+$$
+k_t = W^{K} h_t \in \mathbb{R}^{n_h d_h}, \qquad v_t = W^{V} h_t \in \mathbb{R}^{n_h d_h},
+$$
+
+so the cache holds
+
+$$
+\boxed{\;2\, n_h d_h\;}\ \text{elements per token per layer} \;=\; 2 \times 128 \times 128 = 32768.
+$$
+
+**MLA — project *down* to one shared latent, cache only that.** A single down-projection maps $h_t$ to a small latent $c_t^{KV}$, shared by keys *and* values across *all* heads:
+
+$$
+c_t^{KV} = W^{DKV} h_t \in \mathbb{R}^{d_c}, \qquad W^{DKV} \in \mathbb{R}^{d_c \times d}, \qquad d_c \ll n_h d_h .
+$$
+
+Keys and values are recovered by **up-projections** applied to that shared latent:
+
+$$
+k_t^{C} = W^{UK} c_t^{KV}, \qquad v_t^{C} = W^{UV} c_t^{KV}, \qquad W^{UK}, W^{UV} \in \mathbb{R}^{n_h d_h \times d_c}.
+$$
+
+The up-projection matrices $W^{UK}, W^{UV}$ are **model weights** — paid once, not per token — so **only $c_t^{KV}$ (dimension $d_c$) is cached.** In DeepSeek-V2, $d_c = 512 = 4 d_h$.
+
+**Why up-projecting still beats caching directly (the absorption trick).** You might worry the up-projection has to run each step and re-materialize full $K,V$. It doesn't — the projection folds into the *other* weight matrices, because a matmul of matmuls is one matmul. For the attention score between query $t$ and key $s$ (query also from a projection, $q_t = W^{UQ} c_t^{Q}$):
+
+$$
+q_t^{\top} k_s^{C} = \big(W^{UQ} c_t^{Q}\big)^{\top}\big(W^{UK} c_s^{KV}\big) = c_t^{Q\top}\underbrace{\big(W^{UQ\top} W^{UK}\big)}_{\text{precompute once}} c_s^{KV}.
+$$
+
+So $W^{UK}$ is **absorbed into the query projection** and never applied to the cache at inference; likewise $W^{UV}$ is absorbed into the output projection $W^{O}$. The cached latent $c_s^{KV}$ is consumed directly — no per-token up-projection, and $K,V$ are never stored in full.
+
+**The one wrinkle — RoPE.** Rotary position embeddings make the key position-dependent, which breaks the clean absorption above (the rotation sits between $W^{UQ\top}$ and $W^{UK}$ and can't be precomputed away). DeepSeek's fix — **decoupled RoPE** — adds a small extra key of dimension $d_h^R$ that carries *only* the positional (RoPE) part and is **shared across all heads**; it is cached alongside $c_t^{KV}$. So the true per-token cache is $d_c + d_h^R$ (with $d_h^R = 64$).
+
+**Memory comparison (per token, per layer):**
+
+$$
+\text{MHA: } 2 n_h d_h = 32768 \quad\text{vs.}\quad \text{MLA: } d_c + d_h^R = 512 + 64 = 576 .
+$$
+
+That is a $\approx 57\times$ reduction — equivalently, MLA's footprint matches a GQA model with only $\sim 2.25$ KV groups, while DeepSeek report quality **on par with (or better than) full MHA**. The saving is exactly the ratio
+
+$$
+\frac{d_c + d_h^R}{2\, n_h d_h} \ll 1,
+$$
+
+driven by choosing a latent width $d_c$ far below the full multi-head width $n_h d_h$.
+
+**Aside:** queries are compressed too ($c_t^{Q} = W^{DQ} h_t$), but that is to shrink *activation* memory during training — queries are not cached, so it does not affect the KV-cache figure above.
+
+</div>
 
 ### Multi-token prediction (MTP)  *(approximate — faster token prediction)*
 - **Standard training** predicts only the **next** token. **MTP** adds $k$ prediction heads on top of the shared trunk, trained to predict the next $k$ tokens $(w_{t+1}, \dots, w_{t+k})$ at once.
