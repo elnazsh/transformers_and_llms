@@ -8,5 +8,6 @@ Instructors: Afshine Amidi and Shervine Amidi
 
 ## Lectures
 
-- Lecture 01 — Transformers
+- Lecture 01 - Transformers
 - Lecture 02 - Transformer-Based Models & Tricks
+- Lecture 03 - Large Language Models
