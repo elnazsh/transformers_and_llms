@@ -94,53 +94,169 @@ Notes:
   - memorization: plagiarism / verbatim regeneration of training data (copyright, privacy concerns)
   - *(not in course)* benchmark contamination: eval sets leak into web-scale training data and inflate reported performance
 
-## Training optimizations 
+## Training optimizations
 
-### Memory 
-- What thing do you need to keep in memory
-  - parameters (during initialization)
-  - activations (during forward pass)
-  - gradients (during backward pass)
-  - optimizer states (during weights update)
+### Memory
+- What do you need to keep in memory?
+  - parameters (from initialization onward)
+  - activations (during the forward pass; kept for reuse in the backward pass)
+    - grow with batch size and sequence length
+  - gradients (during the backward pass)
+  - optimizer states (during the weight update)
+    - e.g., Adam keeps 2 extra values per parameter (momentum and variance)
 - How much GPU memory do you have?
-  - order of 10s of GBs
+  - on the order of 10s of GBs
   - e.g., H100 SXM has 80GB, H100 NVL has 94GB
-    
+- *(not in course)* rule of thumb: mixed-precision training with Adam needs $\approx 16$ bytes per parameter
+  - FP16 weights (2) + FP16 gradients (2) + FP32 master weights (4) + momentum (4) + variance (4)
+  - plus activations on top
+  - e.g., a 7B model needs $\approx 112$ GB of training state; it does not fit on one 80GB H100
+- *(not in course)* activation checkpointing: store only a subset of activations
+  - recompute the rest on the fly during the backward pass
+  - trades extra compute ($\approx 30\%$) for large memory savings
+
 ### Data parallelism (DP)
-- Idea. 
-  - Divide batch of data across devices 
-  - Model replicated on each device
-- DP with ZeRO (Zero Redundancy Optimization)
-  - Redundant information across devices
-  - ZeRO-1: share optimizer states
-  - ZeRO-2: share optimizer states + gradients
-  - ZeRO-3: share optimizer states + gradients + parameters
+- Idea.
+  - divide each batch of data across devices
+  - model replicated on each device
+- Cost.
+  - the full model must still fit on every single device
+  - after the forward and backward passes, gradients are aggregated across GPUs (all-reduce)
+  - this aggregation incurs communication cost and slows down training
+- DP with ZeRO (Zero Redundancy Optimizer, Rajbhandari et al., 2020)
+  - goal:
+    - decrease the memory load on each device
+    - cut redundant copies of the same information across devices
+    - makes it easier to fit the model on a device
+  - idea: partition the memory buffers across devices; gather pieces only when needed
+  - variants (each one partitions one more thing):
+    - ZeRO-1: partition optimizer states
+    - ZeRO-2: partition optimizer states + gradients
+    - ZeRO-3: partition optimizer states + gradients + parameters
+  - disadvantage: even more communication cost, hence slower training
+  - *(not in course)* PyTorch's FSDP (Fully Sharded Data Parallel) is essentially ZeRO-3
 
 ### Model Parallelism (MP)
 
-- Idea. Split the model computations across several devices
+- Idea.
+  - split the model computations across several devices
+  - parallelize the computations, even within one batch
 - Variations.
   - Tensor Parallelism (TP)
+    - split individual weight matrices across devices (e.g., attention heads, FFN columns/rows)
+    - needs a very fast interconnect (NVLink), so usually stays within one node
   - Pipeline Parallelism (PP)
+    - put different (groups of) layers on different devices
+    - batches are cut into micro-batches to keep all stages busy (reduce the "pipeline bubble")
   - Sequence Parallelism (SP)
+    - shard activations along the sequence dimension
+    - covers the ops TP leaves replicated (LayerNorm, dropout)
   - Context Parallelism (CP)
+    - shard very long sequences across devices for attention (e.g., Ring Attention)
   - Expert Parallelism (EP)
+    - put different experts (of an MoE) on different devices
+- *(not in course)* frontier training runs combine several of these (DP + TP + PP + CP/EP)
+  - so-called 3D/4D parallelism
 
 ### Flash Attention
+- "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness", Dao et al., 2022
 - GPU structure
-  - HBM
-  - CU
-  - SRAM
-  
-### Mixed precision training
-Technical specs guide of GPUs gives you FLOPS for each data type
+  - CU (Compute Units): where the math happens (SMs, streaming multiprocessors, in NVIDIA terms)
+  - HBM (High-Bandwidth Memory): large and slow memory
+    - the advertised "GPU memory", e.g., 80GB at $\sim 3$ TB/s on an H100
+  - SRAM: small and fast on-chip memory, next to the CUs
+    - $\sim 10\times$ the bandwidth of HBM, but only 10s of MBs in total
+  - takeaway: attention is **memory-bound**; moving data to/from HBM dominates runtime, not the math
 
-Objective. Speed up training and decrease memory requirements
-- Forward pass. Activations in low precision 
-  - input: FP32
-  - activations: FP16
-- Backwards pass. Gradient updates in low precision (FP16)
-- Weights update. Keep weights in high precision (FP32)
+- "Standard" attention computation, with every intermediate materialized in HBM:
+  - LOAD $Q, K$ from HBM by blocks *(mem op)*
+  - compute $S = QK^\top$
+  - WRITE $S$ to HBM *(mem op)*
+  - READ $S$ from HBM *(mem op)*
+  - compute $P = \mathrm{softmax}(S)$
+  - WRITE $P$ to HBM *(mem op)*
+  - LOAD $P, V$ from HBM by blocks *(mem op)*
+  - compute $O = PV$
+  - WRITE $O$ to HBM *(mem op)*
+  - problem: $S$ and $P$ are $n \times n$
+    - reading/writing them scales quadratically with sequence length
+
+- Flash attention ideas:
+  - (ONE) minimize reads/writes to HBM with **tiling**: do the computation block by block in SRAM
+    - Trick. no need to compute the full $S = QK^\top$ before applying softmax
+      - softmax can be computed blockwise and rescaled:
+
+        $$\mathrm{softmax}(S) = \mathrm{softmax}\big([S_1; S_2; \dots; S_B]\big) = \big[\alpha_1\,\mathrm{softmax}(S_1);\ \alpha_2\,\mathrm{softmax}(S_2);\ \dots;\ \alpha_B\,\mathrm{softmax}(S_B)\big]$$
+
+      - the rescaling factors $\alpha_i$ come from running max/sum statistics kept in SRAM ("online softmax")
+    - iteratively:
+      - READ blocks of $Q, K, V$ from HBM to SRAM *(mem op)*
+      - compute a block of $O$, reading from and writing to SRAM only
+      - WRITE the result to HBM to accumulate results *(mem op)*
+    - the full $n \times n$ matrices $S$ and $P$ are never materialized in HBM
+  - (TWO) sometimes it is better to **recompute** instead of storing
+    - normally, activations are stored during the forward pass for use in the backward pass
+    - instead: free them, and recompute them blockwise during the backward pass
+    - we are memory-bound and computation is very fast
+    - net effect: more operations, less memory, and *faster*, since there are fewer HBM reads/writes
+- Result: **exact** attention (no approximation), 2-4$\times$ faster
+  - memory footprint **linear** in sequence length instead of quadratic
+- *(not in course)* FlashAttention-2 (2023) and FlashAttention-3 (2024) improve work partitioning
+  - and exploit newer GPU features (e.g., H100 asynchrony and FP8)
+
+### Mixed precision training
+
+Representation of a float:
+- sign: controls whether the number is positive or negative; 1 bit
+- exponent: controls the magnitude of the number; also called range
+- mantissa: controls the granularity of the number, i.e., what is after the decimal point
+  - also called significand or fraction
+
+Acronyms:
+- FP: Floating Point
+- BF: Brain Float (bfloat, developed at Google Brain)
+
+|      | sign | exponent | mantissa |
+|------|------|----------|----------|
+| FP16 |    1 |        5 |       10 |
+| FP32 |    1 |        8 |       23 |
+| FP64 |    1 |       11 |       52 |
+| BF16 |    1 |        8 |        7 |
+
+- *(not in course)* BF16 keeps FP32's exponent (same dynamic range) and gives up mantissa (precision)
+  - avoids FP16's overflow/underflow issues; the modern default for LLM training
+
+On a GPU:
+- lower precision $\leftrightarrow$ less memory, faster processing
+- technical specs guide of GPUs gives you FLOP/s for each data type:
+
+|                      | H100 SXM        | H100 NVL        |
+|----------------------|-----------------|-----------------|
+| FP64                 | 34 teraFLOPS    | 30 teraFLOPS    |
+| FP64 Tensor Core     | 67 teraFLOPS    | 60 teraFLOPS    |
+| FP32                 | 67 teraFLOPS    | 60 teraFLOPS    |
+| TF32 Tensor Core     | 989 teraFLOPS   | 835 teraFLOPS   |
+| BFLOAT16 Tensor Core | 1,979 teraFLOPS | 1,671 teraFLOPS |
+| FP16 Tensor Core     | 1,979 teraFLOPS | 1,671 teraFLOPS |
+| FP8 Tensor Core      | 3,958 teraFLOPS | 3,341 teraFLOPS |
+| INT8 Tensor Core     | 3,958 TOPS      | 3,341 TOPS      |
+
+- *(not in course)* the Tensor Core figures above assume 2:4 structured sparsity; dense throughput is half
+
+Mixed precision training ("Mixed Precision Training", Micikevicius et al., 2018):
+- Objective. speed up training and decrease memory requirements without hurting performance too much
+  - Forward pass. activations in low precision (FP16)
+  - Backward pass. gradient updates in low precision (FP16)
+  - Weights update. keep a master copy of the weights in high precision (FP32)
+- *(not in course)* loss scaling: with FP16, scale the loss up before backprop, unscale before the update
+  - keeps small gradients from underflowing to zero; unnecessary with BF16
+- *(not in course)* FP8 training is emerging on H100-class GPUs (roughly 2$\times$ FP16 throughput)
+
+Quantization methods (mapping floats to a lower-precision grid; mainly used for inference):
+- zero-point: asymmetric (affine) mapping, with a scale and an offset (the "zero-point")
+  - uses the full integer range even when values are not centered at 0
+- absmax: symmetric mapping, scale by the maximum absolute value
+  - e.g., for INT8: $x \mapsto \mathrm{round}\!\left(\frac{127}{\max\lvert x \rvert}\, x\right)$
 
 ## Supervised finetuning
 
