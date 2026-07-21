@@ -258,6 +258,172 @@ Quantization methods (mapping floats to a lower-precision grid; mainly used for 
 - absmax: symmetric mapping, scale by the maximum absolute value
   - e.g., for INT8: $x \mapsto \mathrm{round}\!\left(\frac{127}{\max\lvert x \rvert}\, x\right)$
 
-## Supervised finetuning
+## Supervised finetuning (SFT)
+
+### Motivation: pretrained model behavior
+- A **pretrained (base) model** only knows how to predict the next token.
+  - it is not (yet) a helpful assistant
+- Example. prompt: *"Can I put my teddy bear in the washer?"*
+  - a base model does not answer; it continues the text with something plausible
+    - e.g., *"Teddy bears are often made of materials like polyester and cotton, ..."*
+    - or it might just ask another question
+  - it mimics likely continuations, not helpful responses
+- **Remedy:** a second stage of **finetuning** that adapts the pretrained weights to a specific behavior.
+
+### SFT
+- **SFT = Supervised FineTuning**
+  - *supervised:* we need labels, i.e., pairs of (input, output)
+  - *finetuning:* we refine already-pretrained weights rather than starting from scratch
+- **Idea.** Change the model behavior by tuning its weights.
+- **Strategy.**
+  - collect pairs of input/outputs with the desired behavior (aka SFT data)
+  - train using the next-token prediction objective, *given the input*
+- **Objective function.** same NTP objective as pretraining, but the loss is computed differently.
+  - the **input (prompt) is fixed:** we do not want the model to parrot it
+    - no teacher forcing on the input, so no loss over the input tokens
+  - the loss starts at the first **output (completion)** token and continues onward:
+
+    ```
+     out:                          Sure    ...
+                                    ↑        ↑
+          ┌──────────────────── LLM ────────────────────┐
+     in:  [BOS]    Do      X       .       Sure
+    ```
+
+    - i.e., condition on the input, only fit the distribution of the output tokens
+
+### Instruction tuning
+- **Special case** of SFT: SFT on instruction-following data.
+  - "Finetuned Language Models Are Zero-Shot Learners", Wei et al., 2022 *(FLAN)*
+- **Goal.** "graduate" the model from a good language model to a **helpful assistant**.
+- **Data mixtures.** can be both human-written and synthetic; categories include:
+  - assistant dialogs
+  - task examples: story writing, poem creation, list generation, explanation, ...
+  - math, reasoning, code
+  - **safety alignment**
+    - teach the model to reject harmful queries (rather than hard-coded regex, which does not scale)
+    - **hedging:** nuance answers instead of making blanket statements
+  - each example is (instruction, ground-truth answer); loss is fit on the answer
+- **Data generation.**
+  - originally almost all **human-written** (expert linguists following answer-writing guidelines)
+  - increasingly **synthetic:** a strong LLM generates candidate answers, then a human or another LLM reviews quality
+    - speeds up dataset curation
+- **Generalization.** the model generalizes beyond the exact examples seen at SFT time.
+  - it leans on knowledge acquired during pretraining
+    - e.g., "write a story about poetry" teaches the *concept* of story writing; pretraining supplies the specifics
+- **Size.** thousands to millions of examples.
+
+  | Model   | SFT size (# examples) |
+  |---------|-----------------------|
+  | GPT-3   | 13 thousand           |
+  | Llama 3 | 10 million            |
+
+  - reported in **# examples**, not tokens (unlike pretraining)
+  - at ~1k tokens/example, this is still several **orders of magnitude smaller** than pretraining
+  - mental model: pretraining = lots of data for general language; SFT = little, very high-quality data to align behavior to the target task
+- **Behavior after instruction tuning.** same teddy-bear prompt now gets a helpful answer.
+  - e.g., *"No, it might get damaged. Try hand washing instead."*
+
+### Challenges
+- **High-quality data needed.**
+  - often requires humans in the loop; expensive in time and resources
+  - upside: SFT datasets are reusable across model versions (curate once, extend over time)
+- **Sensitive to prompt distribution.**
+  - performance depends on how close the SFT prompt distribution is to the inference distribution
+  - out-of-distribution prompts (e.g., a story style not seen in SFT) may not generalize well
+    - fix: add more data covering that region of the distribution
+- **Generalization.** data-mixture coverage matters more than repetition.
+  - points spread across the distribution give the model the *gist* to generalize
+  - repeating the same example again and again does not help
+- **Difficult to evaluate** (see below).
+- **Computationally expensive** (motivates parameter-efficient finetuning, next section).
+
+### Evaluation
+- **Benchmarks.** decompose "quality" into measurable dimensions:
+  - general knowledge: **MMLU** *(Massive Multitask Language Understanding, ~57 tasks)*
+  - basic reasoning: **ARC-Challenge**
+  - math reasoning: **GSM8K** *(Grade School Math, ~8.5k problems)*
+  - code generation: **HumanEval**
+  - *(not in course)* benchmarks proliferate because models optimize for existing ones, so new ones fill the gaps
+- **Validity: "training on the test task".**
+  - "Training on the Test Task Confounds Evaluation and Emergence", Dominguez-Olmedo et al., 2024
+    - the **test task**, not the test *set* (this is not data leakage)
+  - to fairly compare models, ensure **parity** on whether each was trained on the target task
+    - e.g., both trained on math-style data, or neither
+    - benchmarks often ship *auxiliary training sets* for this purpose
+  - sudden benchmark spikes across model versions often trace back to this, not to intrinsic ability
+- **"Real-life" feeling: Chatbot Arena / LMArena.**
+  - website where users compare two anonymous model responses (A/B test) and vote for the better one
+  - pairwise votes are aggregated into a ranking *(not in course)* via an Elo / Bradley-Terry rating
+  - **benefit:** puts a number on "vibes" (subjective helpfulness)
+  - **outstanding challenges:**
+    - **cold start:** a new model's first few matchups are noisy but strongly influence its ranking
+    - **easy to rig:** models are identifiable (e.g., "who are you?" → "I'm ChatGPT"), so an adversary can game votes
+      - "Exploring and Mitigating Adversarial Manipulation of Voting-Based Leaderboards", Huang et al., 2025
+    - **factuality:** users can't reliably judge correctness (a fluent, actionable answer can still be wrong)
+    - **personal preference bias:** voters are not representative of the wider user population
+      - e.g., emojis: popular broadly, disliked by many domain experts
+    - **safety penalization:** users dislike refusals, biasing votes against intended safety behavior
+  - takeaway: **evaluation is a hard problem**; no single number captures it, tailor to your use case
+
+### Alignment
+- **Alignment** = the post-pretraining stages that make the model do what you want.
+  - **finetuning + preference tuning** (preference tuning covered in Lecture 5)
+- *(not in course)* **Mid-training:** an emerging stage between pretraining and finetuning.
+  - same NTP objective as pretraining, but on data/tasks closer to what you care about
 
 ## Parameter-efficient finetuning
+
+### LoRA
+- **Context.** SFT is resource intensive and not everyone has big GPUs.
+- **Idea.** Low-Rank Adaptation (LoRA): approximate the weight update with a product of two **low-rank** matrices.
+  - "LoRA: Low-Rank Adaptation of Large Language Models", Hu et al., 2021
+  - decompose the finetuned weights as:
+
+    $$W = W_0 + BA$$
+
+    - $W_0 \in \mathbb{R}^{d \times k}$: pretrained weights, **frozen**
+    - $B \in \mathbb{R}^{d \times r}$ and $A \in \mathbb{R}^{r \times k}$: the only trainable matrices
+    - $r$ is the **rank**, taken very small (e.g., up to ~10), while $d, k$ are hundreds to thousands
+  - since $r \ll \min(d, k)$, there are far fewer parameters to train, at similar performance
+- **Forward pass.** run both terms and add them:
+
+  $$h = W_0 x + B(A x)$$
+
+  - $W_0$ never changes; only $A, B$ receive gradients
+- **Benefit: swap matrices = swap tasks.**
+  - start from one base model $W_0$, learn task-specific $(A, B)$ per task
+    - e.g., $(A_\text{spam}, B_\text{spam})$ for spam detection, $(A_\text{sentiment}, B_\text{sentiment})$ for sentiment, etc.
+  - swap the small adapters at will instead of storing a full finetuned model per task
+- **Where to apply LoRA.**
+  - originally (Hu et al., 2021): on the **attention** weight matrices
+  - updated guidance: the **feed-forward blocks** are the most impactful location
+    - "LoRA Without Regret", Schulman et al., 2025
+  - today both usually carry LoRA matrices, but the bulk of the gain is in the feed-forward block
+- **Training dynamics** *(empirical, not fully explained)*.
+  - LoRA needs a **higher learning rate** than full finetuning (~10x)
+    - intuition: the small rank restricts the space, so larger steps are needed
+  - LoRA does **poorly on large batch sizes** compared to full finetuning
+    - intuition: the training dynamics of a product of matrices differ from a full matrix
+- ***(not in course)*** the rank $r$ is a design choice.
+  - grid-search it, or just pick a common value (e.g., 4); the parameter reduction is already so large that shrinking further matters little
+- **Other methods.** prefix tuning and adapters (in the class textbook; less commonly used).
+
+### QLoRA
+- **Idea.** Quantize all frozen weights to relieve the memory bottleneck.
+  - "QLoRA: Efficient Finetuning of Quantized LLMs", Dettmers et al., 2023
+  - $W_0$ is **stored quantized**; the trainable $A, B$ are kept in **full precision** (BF16)
+  - **computations are done in full precision** (dequantize $W_0$ on the fly)
+- **Efficient quantization: NF4 (4-bit NormalFloat).**
+  - assumes weights are **normally distributed**, so it splits the range by **normal quantiles**
+    - rather than uniform (fixed-width) cutoffs like INT8
+  - result: roughly equal number of values per bucket, so the 4 bits are used efficiently
+- **Double quantization.** quantize the quantization constants too.
+  - converting weights in/out of quantized form generates **quantization constants**
+  - QLoRA quantizes those constants as well (FP32 $\to$ FP8), for extra savings
+- **Benefits.**
+  - VRAM savings enable finetuning on smaller GPUs, and faster
+  - better memory/quality trade-off
+- **Orders of magnitude** (reported on Llama 65B):
+  - ~**16x** VRAM savings during finetuning
+  - the double-quantization trick saves an extra ~6%
